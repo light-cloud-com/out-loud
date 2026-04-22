@@ -1,0 +1,228 @@
+openapi: 3.1.0
+info:
+  title: Out Loud — local TTS API
+  version: "1.0.0"
+  description: |
+    Local HTTP API exposed by the Out Loud desktop app on `127.0.0.1:51730`.
+
+    All generation happens on the user's machine. The server only binds to loopback
+    and refuses non-localhost connections.
+
+    Canonical source: `electron/main.ts` in this repository.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://127.0.0.1:51730
+    description: Local Out Loud desktop app
+
+tags:
+  - name: audio
+    description: Text-to-speech generation
+  - name: settings
+    description: Shared settings between the app and browser extensions
+
+paths:
+  /api/v1/audio/voices:
+    get:
+      tags: [audio]
+      summary: List available voices
+      responses:
+        "200":
+          description: Voices available on this install
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoicesResponse"
+              example:
+                voices:
+                  - { id: "af_heart", name: "Heart", lang: "en-us", engine: "kokoro" }
+                  - { id: "af_bella", name: "Bella", lang: "en-us", engine: "kokoro" }
+                  - { id: "bf_emma", name: "Emma", lang: "en-gb", engine: "kokoro" }
+
+  /api/v1/audio/speech:
+    post:
+      tags: [audio]
+      summary: Generate speech (non-streaming)
+      description: |
+        Generates the full audio file, then returns it in one response.
+        Use `/api/v1/audio/speech/stream` for lower first-byte latency.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpeechRequest"
+            example:
+              voice: "af_heart"
+              input: "Hello, world."
+              speed: 1
+              response_format: "wav"
+      responses:
+        "200":
+          description: Complete audio file
+          content:
+            audio/wav:
+              schema: { type: string, format: binary }
+            audio/mpeg:
+              schema: { type: string, format: binary }
+        "400":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+
+  /api/v1/audio/speech/stream:
+    post:
+      tags: [audio]
+      summary: Generate speech (streaming)
+      description: |
+        Returns a chunked `application/octet-stream` response. Each chunk is framed as:
+
+        | Bytes | Meaning                     |
+        | ----- | --------------------------- |
+        | 0–3   | chunk index (uint32 LE)     |
+        | 4–7   | total chunks (uint32 LE)    |
+        | 8–11  | WAV data length (uint32 LE) |
+        | 12+   | WAV audio bytes             |
+
+        Chunks arrive roughly at speech-generation rate, letting the client start
+        playback before the full utterance is ready.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpeechRequest"
+      responses:
+        "200":
+          description: Framed WAV chunks
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "500":
+          $ref: "#/components/responses/Error"
+
+  /api/v1/settings:
+    get:
+      tags: [settings]
+      summary: Get shared settings
+      responses:
+        "200":
+          description: Current shared settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+    post:
+      tags: [settings]
+      summary: Update shared settings
+      description: Accepts a partial `Settings` object. Omitted fields are left unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Settings"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "400":
+          $ref: "#/components/responses/Error"
+
+  /api/v1/openapi.yaml:
+    get:
+      summary: This OpenAPI spec
+      responses:
+        "200":
+          description: The OpenAPI 3.1 spec for this API
+          content:
+            application/yaml:
+              schema: { type: string }
+
+components:
+  schemas:
+    Voice:
+      type: object
+      required: [id, name, lang, engine]
+      properties:
+        id:
+          type: string
+          description: |
+            Voice ID. Convention: `{lang-prefix}{gender}_{name}`, e.g. `af_heart`.
+            See [`docs/electron-app.md`](../docs/electron-app.md#voice-naming-convention).
+          example: "af_heart"
+        name:
+          type: string
+          example: "Heart"
+        lang:
+          type: string
+          description: BCP-47 language tag (or espeak-ng code)
+          example: "en-us"
+        engine:
+          type: string
+          enum: [kokoro]
+          example: "kokoro"
+
+    VoicesResponse:
+      type: object
+      required: [voices]
+      properties:
+        voices:
+          type: array
+          items: { $ref: "#/components/schemas/Voice" }
+
+    SpeechRequest:
+      type: object
+      required: [voice, input]
+      properties:
+        voice:
+          type: string
+          description: |
+            A voice ID (`af_heart`) or a voice-mixing formula
+            (`af_bella*0.7+af_sarah*0.3`).
+            See [Voice mixing](../docs/electron-app.md#voice-mixing).
+          example: "af_heart"
+        input:
+          type: string
+          description: Text to speak
+          example: "Hello, world."
+        speed:
+          type: number
+          description: Playback speed multiplier
+          default: 1
+          minimum: 0.5
+          maximum: 2.0
+        response_format:
+          type: string
+          enum: [wav, mp3]
+          default: wav
+          description: Output container. Only applies to `POST /api/v1/audio/speech`.
+
+    Settings:
+      type: object
+      properties:
+        text: { type: string }
+        language: { type: string, example: "en-us" }
+        voice: { type: string, example: "af_heart" }
+        volume: { type: integer, minimum: 0, maximum: 100, example: 80 }
+        highlightChunk: { type: boolean, example: true }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+  responses:
+    Error:
+      description: Something went wrong
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

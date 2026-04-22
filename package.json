@@ -1,0 +1,98 @@
+{
+  "name": "out-loud",
+  "version": "1.0.0",
+  "description": "Free, open-source, 100% offline AI text-to-speech desktop app powered by Kokoro-82M.",
+  "author": {
+    "name": "Light Cloud Labs",
+    "email": "labs@light-cloud.com",
+    "url": "https://labs.light-cloud.com"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/light-cloud-com/out-loud#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/light-cloud-com/out-loud.git"
+  },
+  "bugs": {
+    "url": "https://github.com/light-cloud-com/out-loud/issues"
+  },
+  "keywords": [
+    "tts",
+    "text-to-speech",
+    "kokoro",
+    "electron",
+    "offline",
+    "open-source",
+    "speechify-alternative"
+  ],
+  "private": true,
+  "type": "module",
+  "main": "electron/main.js",
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "fmt": "prettier . --write",
+    "fmt:check": "prettier . --check",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "knip": "knip",
+    "test": "vitest run --passWithNoTests",
+    "check": "npm run lint && npm run fmt:check && npm run knip && npm run electron:compile",
+    "prepare": "husky",
+    "electron:compile": "tsc -p electron/tsconfig.json",
+    "electron-ui:install": "cd electron-ui && npm install",
+    "electron-ui:dev": "cd electron-ui && npm run dev",
+    "electron-ui:build": "cd electron-ui && npm run build",
+    "electron:dev": "npm run electron:compile && concurrently \"npm run electron-ui:dev\" \"wait-on http://localhost:51731 && NODE_ENV=development electron .\"",
+    "electron:browser": "npm run electron:compile && concurrently \"npm run electron-ui:dev\" \"wait-on http://localhost:51731 && node scripts/serve-electron-ui.mjs\"",
+    "electron:build": "npm run electron-ui:build && npm run electron:compile && electron-builder --publish never",
+    "electron:build:mac": "npm run electron-ui:build && npm run electron:compile && electron-builder --mac --publish never -c.directories.output=releases/macos",
+    "electron:build:mas": "npm run electron-ui:build && npm run electron:compile && electron-builder --mac mas --publish never -c.directories.output=releases/macos",
+    "electron:build:mas-dev": "npm run electron-ui:build && npm run electron:compile && electron-builder --mac mas-dev --publish never -c.directories.output=releases/macos",
+    "electron:build:win": "npm run electron-ui:build && npm run electron:compile && electron-builder --win --publish never -c.directories.output=releases/windows",
+    "electron:build:linux": "npm run electron-ui:build && npm run electron:compile && electron-builder --linux --publish never -c.directories.output=releases/linux",
+    "extension:chrome:pack": "mkdir -p releases/extensions && cd chrome-extension && zip -r ../releases/extensions/out-loud-chrome.zip . -x '*.DS_Store'",
+    "extension:safari:convert": "mkdir -p releases/extensions && xcrun safari-web-extension-converter chrome-extension --project-location releases/extensions/safari --app-name 'Out Loud Extension' --bundle-identifier com.lightcloudlabs.outloud.extension --no-prompt",
+    "extension:test": "echo 'Testing extension API...' && curl -s http://127.0.0.1:51730/api/v1/audio/voices | head -c 200"
+  },
+  "dependencies": {
+    "espeak-ng": "1.0.2",
+    "ffmpeg-static": "^5.3.0",
+    "fluent-ffmpeg": "2.1.3",
+    "onnxruntime-node": "1.20.1",
+    "wavefile": "11.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.4",
+    "@types/fluent-ffmpeg": "2.1.27",
+    "concurrently": "^9.2.1",
+    "electron": "^41.2.2",
+    "electron-builder": "^26.8.1",
+    "eslint": "9.39.4",
+    "eslint-config-prettier": "9.1.2",
+    "eslint-plugin-react": "7.37.5",
+    "eslint-plugin-react-hooks": "5.2.0",
+    "globals": "15.15.0",
+    "husky": "9.1.7",
+    "knip": "^6.5.0",
+    "lint-staged": "15.5.2",
+    "prettier": "3.5.0",
+    "prettier-plugin-tailwindcss": "0.6.14",
+    "sharp": "^0.34.5",
+    "typescript": "5.7.3",
+    "typescript-eslint": "8.59.0",
+    "vitest": "3.0.5",
+    "wait-on": "^9.0.3"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,mjs,cjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml,css,html}": [
+      "prettier --write"
+    ]
+  }
+}

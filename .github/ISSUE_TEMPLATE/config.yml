@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussion / general question
+    url: https://github.com/light-cloud-com/labs__out-loud/discussions
+    about: For open-ended questions, ideas, or conversations that aren't quite a bug or feature.

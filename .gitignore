@@ -1,0 +1,29 @@
+# Temp files and dirs
+temp/
+tmp/
+
+# Nodejs
+node_modules
+
+# Build artifacts (all final outputs land in releases/)
+releases/
+electron-ui/dist/
+tray-app/dist/
+chrome-extension/lib/*.wasm
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*

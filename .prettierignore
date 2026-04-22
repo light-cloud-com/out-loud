@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+build/
+dist/
+releases/
+electron-ui/dist/
+tray-app/dist/
+chrome-extension/dist/
+
+# Compiled TypeScript
+electron/**/*.js
+electron/**/*.js.map
+
+# Vendored libraries
+chrome-extension/lib/
+
+# Lockfiles
+package-lock.json
+
+# Logs
+*.log
+
+# Generated
+*.wasm

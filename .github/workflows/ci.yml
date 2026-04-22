@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: Lint, test, typecheck, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install electron-ui dependencies
+        run: npm --prefix electron-ui ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run fmt:check
+
+      - name: Knip (unused code/deps)
+        run: npm run knip
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Typecheck Electron main
+        run: npm run electron:compile
+
+      - name: Build renderer UI
+        run: npm --prefix electron-ui run build

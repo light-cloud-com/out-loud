@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1"/>
+      <stop offset="100%" style="stop-color:#4f46e5"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="24" fill="url(#bg)"/>
+  <g fill="#fff">
+    <!-- Speaker icon -->
+    <path d="M40 48v32h16l20 16V32L56 48H40z"/>
+    <!-- Sound waves -->
+    <path d="M88 64c0-8.8-4.8-16.5-12-20.5v41c7.2-4 12-11.7 12-20.5z" opacity="0.9"/>
+    <path d="M100 64c0-15.5-8.5-29-21-36.3v72.6c12.5-7.3 21-20.8 21-36.3z" opacity="0.6"/>
+  </g>
+</svg>

@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v1.0.1). Create it first with `git tag`."
+        required: true
+
+permissions:
+  contents: write # to attach assets to the GitHub Release
+
+jobs:
+  desktop:
+    name: Build ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            script: electron:build:mac
+            output_dir: releases/macos
+          - os: windows-latest
+            script: electron:build:win
+            output_dir: releases/windows
+          - os: ubuntu-latest
+            script: electron:build:linux
+            output_dir: releases/linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install electron-ui dependencies
+        run: npm --prefix electron-ui ci
+
+      - name: Build
+        run: npm run ${{ matrix.script }}
+        env:
+          # Disable keychain identity auto-discovery on macOS (builds are unsigned
+          # until real signing secrets are wired up).
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          # Intentionally NOT setting GH_TOKEN here — electron-builder would
+          # auto-trigger implicit GitHub publishing on tag push, conflicting
+          # with the softprops/action-gh-release step in the release job.
+          # When you're ready to sign, re-introduce the CSC_LINK / APPLE_* /
+          # WIN_CSC_LINK block here and remove `"identity": null` from the
+          # mac section in electron-builder.json.
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            ${{ matrix.output_dir }}/*.dmg
+            ${{ matrix.output_dir }}/*.zip
+            ${{ matrix.output_dir }}/*.exe
+            ${{ matrix.output_dir }}/*.AppImage
+            ${{ matrix.output_dir }}/*.deb
+            ${{ matrix.output_dir }}/*.blockmap
+          if-no-files-found: warn
+
+  extensions:
+    name: Pack extensions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Pack Chrome extension
+        run: |
+          mkdir -p releases/extensions
+          cd chrome-extension
+          zip -r ../releases/extensions/out-loud-chrome.zip . \
+            -x '*.DS_Store' \
+            -x 'package-lock.json' \
+            -x 'node_modules/*'
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-extension
+          path: releases/extensions/out-loud-chrome.zip
+
+  release:
+    name: Create GitHub Release
+    needs: [desktop, extensions]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts into a single folder
+        run: |
+          mkdir -p release-assets
+          find artifacts -mindepth 2 -type f -print0 | xargs -0 -I{} cp {} release-assets/
+          ls -la release-assets
+
+      - name: Publish GitHub Release (draft)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: release-assets/*
+          generate_release_notes: true
+          draft: true
+          fail_on_unmatched_files: false

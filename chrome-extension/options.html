@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Out Loud TTS - Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>Out Loud TTS Settings</h1>
+        <p class="subtitle">Configure your text-to-speech preferences</p>
+      </header>
+
+      <form id="settings-form">
+        <section class="section">
+          <h2>Server Connection</h2>
+
+          <div class="form-group">
+            <label for="server-url">Out Loud Server URL</label>
+            <input type="url" id="server-url" placeholder="http://localhost:5173" />
+            <p class="help-text">The URL of your Out Loud server. Default: http://localhost:5173</p>
+          </div>
+
+          <div class="form-group">
+            <label for="api-key">API Key (Optional)</label>
+            <input type="password" id="api-key" placeholder="Enter API key if required" />
+            <p class="help-text">Only required if your server has authentication enabled</p>
+          </div>
+
+          <div class="form-group">
+            <button type="button" id="test-connection" class="btn btn-secondary">
+              Test Connection
+            </button>
+            <span id="connection-result" class="connection-result"></span>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Voice Settings</h2>
+
+          <div class="form-group">
+            <label for="default-language">Default Language</label>
+            <select id="default-language">
+              <option value="en-us">English (US)</option>
+              <option value="en-gb">English (UK)</option>
+              <option value="ja">Japanese</option>
+              <option value="cmn">Chinese (Mandarin)</option>
+              <option value="es-419">Spanish</option>
+              <option value="hi">Hindi</option>
+              <option value="it">Italian</option>
+              <option value="pt-br">Portuguese (Brazil)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="default-voice">Default Voice</label>
+            <select id="default-voice">
+              <!-- Populated by JavaScript -->
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="default-speed">Default Speed: <span id="speed-display">1.0</span>x</label>
+            <input type="range" id="default-speed" min="0.5" max="2.0" step="0.1" value="1.0" />
+          </div>
+
+          <div class="form-group">
+            <label for="default-format">Audio Format</label>
+            <select id="default-format">
+              <option value="mp3">MP3 (Smaller size)</option>
+              <option value="wav">WAV (Higher quality)</option>
+            </select>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Behavior</h2>
+
+          <div class="form-group checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="auto-play" />
+              <span>Auto-play when text is selected</span>
+            </label>
+            <p class="help-text">Automatically start reading when you select text</p>
+          </div>
+        </section>
+
+        <div class="actions">
+          <button type="submit" class="btn btn-primary">Save Settings</button>
+          <button type="button" id="reset-btn" class="btn btn-secondary">Reset to Defaults</button>
+        </div>
+      </form>
+
+      <div id="save-notification" class="notification hidden">Settings saved successfully!</div>
+    </div>
+
+    <script src="constants.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

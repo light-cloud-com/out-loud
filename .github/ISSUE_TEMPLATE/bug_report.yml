@@ -1,0 +1,68 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! The more detail you can include, the faster we can help.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A clear description of what went wrong and what you expected instead.
+      placeholder: I clicked play and the app crashed; I expected it to speak.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Out Loud
+        2. Paste '...'
+        3. Click 'Play'
+        4. See error
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Found in the Out Loud menu → About (or the window title)
+      placeholder: e.g. 1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste any relevant terminal output, crash logs, or console errors.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I've searched existing issues for duplicates
+          required: true
+        - label: I'm on the latest release
+          required: false

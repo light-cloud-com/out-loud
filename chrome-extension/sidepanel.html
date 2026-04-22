@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Out Loud</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <div class="container">
+      <!-- Header -->
+      <div class="header">
+        <img src="icons/icon.png" alt="Out Loud" class="header-icon" />
+        <span>Out Loud</span>
+      </div>
+
+      <!-- Text Input -->
+      <div class="text-section">
+        <div class="text-input-wrapper">
+          <textarea
+            id="selected-text"
+            class="text-input"
+            placeholder="Select text on the page or type here..."
+          ></textarea>
+          <div id="text-highlight-overlay" class="text-highlight-overlay hidden"></div>
+        </div>
+      </div>
+
+      <!-- Language & Voice -->
+      <div class="controls-section">
+        <div class="control-group">
+          <label class="label">Language</label>
+          <select id="language-select">
+            <option value="en-us">English (US)</option>
+            <option value="en-gb">English (UK)</option>
+            <option value="es-419">Spanish</option>
+            <option value="pt-br">Portuguese (BR)</option>
+            <option value="it">Italian</option>
+            <option value="hi">Hindi</option>
+            <option value="ja">Japanese</option>
+            <option value="cmn">Chinese</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label class="label">Voice</label>
+          <select id="voice-select">
+            <option value="af_heart">Heart (Female)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Volume -->
+      <div class="control-group">
+        <label class="label">Volume</label>
+        <div class="volume-row">
+          <input
+            type="range"
+            id="volume-slider"
+            min="0"
+            max="100"
+            value="80"
+            class="volume-slider"
+          />
+          <span id="volume-value" class="volume-value">80%</span>
+        </div>
+      </div>
+
+      <!-- Playback -->
+      <section class="playback-section">
+        <div class="playback-controls">
+          <button id="play-btn" class="btn btn-primary" disabled>
+            <svg class="icon play-icon" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </button>
+          <button id="download-btn" class="btn btn-secondary" disabled>
+            <svg class="icon" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+            </svg>
+          </button>
+        </div>
+
+        <!-- Loading (hidden) -->
+        <div id="loading-indicator" class="loading hidden">
+          <div class="spinner"></div>
+          <span>Generating...</span>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <div class="settings-section">
+        <label class="checkbox-label">
+          <input type="checkbox" id="highlight-checkbox" />
+          <span>Highlight current chunk</span>
+        </label>
+      </div>
+
+      <!-- Banner shown when app not running -->
+      <div id="download-banner" class="download-banner hidden">
+        <p class="banner-title">Open Out Loud app</p>
+        <p class="banner-subtitle">or download it free from</p>
+        <a href="https://out-loud.pro" target="_blank" class="download-btn"> out-loud.pro </a>
+        <button id="retry-btn" class="retry-btn">Retry Connection</button>
+        <span class="download-hint">Works offline, 100% private</span>
+      </div>
+
+      <!-- Footer -->
+      <div class="footer">
+        <a href="https://labs.light-cloud.com" target="_blank" class="footer-brand">
+          <img src="icons/lightcloud-logo.png" alt="Light Cloud Labs" class="footer-logo" />
+          <span>Light Cloud Labs</span>
+        </a>
+      </div>
+    </div>
+
+    <script src="constants.js"></script>
+    <script src="src/text-chunker.js"></script>
+    <script src="src/streaming-player.js"></script>
+    <script src="src/api.js"></script>
+    <script src="src/settings.js"></script>
+    <script src="src/highlight.js"></script>
+    <script src="src/playback.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

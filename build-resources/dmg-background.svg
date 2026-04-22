@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="320" viewBox="0 0 500 320">
+  <rect width="500" height="320" fill="#ffffff"/>
+  <!-- Arrow pointing from app to Applications -->
+  <path d="M200 80 L280 80" stroke="#999999" stroke-width="2" fill="none" stroke-dasharray="6,4"/>
+  <polygon points="290,80 275,72 275,88" fill="#999999"/>
+</svg>

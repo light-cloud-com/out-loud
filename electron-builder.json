@@ -1,0 +1,111 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.outloud.app",
+  "productName": "Out Loud",
+  "directories": {
+    "output": "releases/desktop",
+    "buildResources": "build-resources"
+  },
+  "files": [
+    "electron/**/*.js",
+    "electron/**/*.cjs",
+    "electron/**/*.png",
+    "electron/models/**/*",
+    "electron-ui/dist/**/*",
+    "!node_modules/**/*",
+    "node_modules/onnxruntime-node/**/*",
+    "node_modules/espeak-ng/**/*",
+    "node_modules/wavefile/**/*",
+    "node_modules/fluent-ffmpeg/**/*",
+    "node_modules/ffmpeg-static/**/*",
+    "node_modules/isexe/**/*",
+    "node_modules/which/**/*",
+    "node_modules/async/**/*"
+  ],
+  "extraResources": [
+    {
+      "from": "node_modules/ffmpeg-static",
+      "to": "ffmpeg-static",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "docs/app/openapi.yaml",
+      "to": "openapi.yaml"
+    }
+  ],
+  "mac": {
+    "category": "public.app-category.utilities",
+    "target": [
+      {
+        "target": "dmg",
+        "arch": ["arm64", "x64"]
+      },
+      {
+        "target": "zip",
+        "arch": ["arm64", "x64"]
+      }
+    ],
+    "identity": null,
+    "icon": "build-resources/icon.icns",
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "build-resources/entitlements.mac.plist",
+    "entitlementsInherit": "build-resources/entitlements.mac.plist"
+  },
+  "dmg": {
+    "background": "build-resources/dmg-background.png",
+    "iconSize": 80,
+    "window": {
+      "width": 500,
+      "height": 320
+    },
+    "contents": [
+      {
+        "x": 145,
+        "y": 75
+      },
+      {
+        "x": 350,
+        "y": 75,
+        "type": "link",
+        "path": "/Applications"
+      }
+    ]
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "build-resources/icon.ico"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "installerIcon": "build-resources/icon.ico",
+    "uninstallerIcon": "build-resources/icon.ico"
+  },
+  "linux": {
+    "target": [
+      { "target": "AppImage", "arch": ["x64", "arm64"] },
+      { "target": "deb", "arch": ["x64", "arm64"] }
+    ],
+    "icon": "build-resources/icons",
+    "category": "Utility"
+  },
+  "mas": {
+    "hardenedRuntime": false,
+    "entitlements": "build-resources/entitlements.mas.plist",
+    "entitlementsInherit": "build-resources/entitlements.mas.inherit.plist",
+    "category": "public.app-category.utilities"
+  },
+  "asar": true,
+  "asarUnpack": [
+    "node_modules/onnxruntime-node/**/*",
+    "node_modules/ffmpeg-static/**/*",
+    "node_modules/espeak-ng/**/*",
+    "electron/models/**/*"
+  ]
+}
