@@ -3,6 +3,41 @@
 All notable user-facing changes to Out Loud. See `git log` for the full
 history.
 
+## 1.0.6 — 2026-06-01
+
+### Accessibility
+
+- **Talker mode.** A new Settings toggle (off by default) turns Out Loud
+  into a type-and-speak "talker": press **Enter** to speak the text and
+  clear the box, the text box stays editable while audio plays (type the
+  next line before the last finishes), and a short audio click plus a
+  screen-reader status announce that speech is generating. Designed so the
+  app is usable with your eyes closed or away from the screen.
+- **Keyboard & focus.** **⌘/Ctrl+Enter** speaks in any mode, **Shift+Enter**
+  inserts a line break, and **Esc** always returns the cursor to the single
+  text box so it can never be "lost." The text box also autofocuses on
+  launch.
+
+### Speech
+
+- **Pause tags.** Insert a silence anywhere with `[1s]`, `[500ms]`,
+  `<pause=1s>`, or `<break time="1s"/>` (all equivalent). The bracket form
+  already existed but was undocumented and strict; it now also accepts `ms`,
+  capital `S`, and spaces. Documented in the README and the new Help panel.
+- **Pause-aware highlighting.** "Highlight current chunk" now treats pause
+  tags as silence, so the highlight stays in sync with the audio through
+  pauses instead of drifting, and the tag itself is no longer highlighted.
+
+### Updates & help
+
+- **Update notifications.** Out Loud now checks GitHub for newer releases
+  and shows an in-app banner when one is available, with a **Download**
+  button that fetches the right installer for your platform directly. (No
+  network calls in Mac App Store builds.)
+- **Help / About panel.** A new **?** button in the footer opens a panel
+  with the app version, keyboard shortcuts, a pause-tag cheat-sheet, and
+  links to the site, repo, and issue tracker.
+
 ## 1.0.5 — 2026-05-24
 
 ### UI

@@ -35,6 +35,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     getAsset: async (name) => {
         return await ipcRenderer.invoke("app:asset", name);
     },
+    // Get the app version (for Help/About).
+    getAppVersion: async () => {
+        return await ipcRenderer.invoke("app:version");
+    },
     // Quit the app
     quit: () => {
         ipcRenderer.send("app:quit");
@@ -52,6 +56,25 @@ contextBridge.exposeInMainWorld("electronAPI", {
         const handler = (_event, settings) => callback(settings);
         ipcRenderer.on("settings:updated", handler);
         return () => ipcRenderer.removeListener("settings:updated", handler);
+    },
+    // ---- Update notice ----
+    // Get the current available-update info, or null when up to date.
+    getUpdate: async () => {
+        return await ipcRenderer.invoke("update:get");
+    },
+    // Listen for update info pushed by the main process after a check.
+    onUpdateAvailable: (callback) => {
+        const handler = (_event, update) => callback(update);
+        ipcRenderer.on("update:available", handler);
+        return () => ipcRenderer.removeListener("update:available", handler);
+    },
+    // Skip an update version; resolves to the refreshed update info (or null).
+    skipVersion: async (version) => {
+        return await ipcRenderer.invoke("update:skip", version);
+    },
+    // Open an https link in the default browser.
+    openExternal: (url) => {
+        ipcRenderer.send("app:open-external", url);
     },
     // Check if running in Electron
     isElectron: true,

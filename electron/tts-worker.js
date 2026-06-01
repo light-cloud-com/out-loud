@@ -312,8 +312,24 @@ async function phonemize(text, langId) {
     const generated = espeak.FS.readFile("generated", { encoding: "utf8" });
     return generated.split("\n").join(" ").trim();
 }
+// Normalize the user-facing pause syntaxes into the canonical [Ns] marker that
+// the rest of the pipeline understands. Accepts:
+//   <pause=1s> / <pause=500ms> / <pause=1>      (the friendly tag)
+//   <break time="1s"/> / <break time='500ms'>   (SSML-style)
+//   [500ms] / [1 s] / [1S] / [1s]               (forgiving bracket form)
+// Everything collapses to seconds, e.g. [1s], [0.5s].
+function normalizePauseTags(text) {
+    const toMarker = (value, unit) => {
+        const seconds = unit && unit.toLowerCase() === "ms" ? parseFloat(value) / 1000 : parseFloat(value);
+        return `[${seconds}s]`;
+    };
+    return text
+        .replace(/<\s*pause\s*=\s*"?([0-9]*\.?[0-9]+)\s*(ms|s)?"?\s*\/?\s*>/gi, (_, n, u) => toMarker(n, u))
+        .replace(/<\s*break\s+time\s*=\s*["']?([0-9]*\.?[0-9]+)\s*(ms|s)?["']?\s*\/?\s*>/gi, (_, n, u) => toMarker(n, u))
+        .replace(/\[\s*([0-9]*\.?[0-9]+)\s*(ms|s)\s*\]/gi, (_, n, u) => toMarker(n, u));
+}
 function sanitizeText(rawText) {
-    return rawText
+    return normalizePauseTags(rawText)
         .replace(/\.\s+/g, "[0.4s]")
         .replace(/,\s+/g, "[0.2s]")
         .replace(/;\s+/g, "[0.4s]")

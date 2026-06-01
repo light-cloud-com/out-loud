@@ -32,6 +32,7 @@
   - [macOS first launch](#macos-first-launch)
   - [Windows: SmartScreen warning](#windows-smartscreen-warning)
 - [Supported languages](#supported-languages)
+- [Speaking tips: pauses & shortcuts](#speaking-tips-pauses--shortcuts)
 - [How it works](#how-it-works)
 - [API](#api)
 - [Repository layout](#repository-layout)
@@ -45,9 +46,11 @@
 ## What it does
 
 - Reads text aloud with 50+ natural voices across 8 languages
-- Runs 100% offline. Nothing leaves your computer
+- Speech runs 100% offline — your text never leaves your computer
 - Built on [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), an open-weight TTS model ranked highly on the [TTS Arena](https://huggingface.co/spaces/TTS-AGI/TTS-Arena)
+- Accessible **Talker mode** (type-and-speak) and inline **pause tags** — see [Speaking tips](#speaking-tips-pauses--shortcuts)
 - Desktop app with menu-bar / system-tray integration
+- Tells you in-app when a new version is available (the only network call — checks GitHub releases)
 - Chrome & Safari extensions to read any webpage in one click
 - Local HTTP API on port `51730` for extensions and scripts
 
@@ -96,6 +99,25 @@ Windows may show "Windows protected your PC" because the installer isn't signed 
 ## Supported languages
 
 English (US & UK), Japanese, Chinese (Mandarin), Spanish, Brazilian Portuguese, Italian, and Hindi. 50+ voices total.
+
+## Speaking tips: pauses & shortcuts
+
+**Pauses.** Insert a silence anywhere in the text with a tag — all of these are equivalent and produce a 1-second pause:
+
+```
+[1s]        [1000ms]        <pause=1s>        <break time="1s"/>
+```
+
+Use decimals or `ms` for finer control (`[0.5s]`, `[250ms]`). Punctuation also pauses automatically, so normal prose already sounds natural: period/semicolon ≈ 0.4s, colon ≈ 0.3s, comma ≈ 0.2s, and a line break ≈ 0.4s.
+
+**Keyboard.**
+
+- **⌘/Ctrl + Enter** — speak the current text (works any time).
+- **Shift + Enter** — insert a line break without speaking.
+- **Esc** — jump the cursor back to the text box.
+- **Talker mode** (Settings): plain **Enter** speaks and then clears the box, and the text box stays editable while audio plays — type-and-go, no need to find a button.
+
+**Blend voices (API).** The `voice` field accepts mixing formulas, e.g. `af_heart*0.6+am_michael*0.4` (weights must sum to 1) — see [API](#api).
 
 ## How it works
 

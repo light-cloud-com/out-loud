@@ -209,7 +209,7 @@ export function useAudioPlayer(getVolume: () => number) {
   }, [getCurrentChunkIndex]);
 
   const play = useCallback(
-    async (text: string, voice: string, language: string) => {
+    async (text: string, voice: string, language: string, opts?: { forceRestart?: boolean }) => {
       if (!text.trim()) return;
 
       // Check if electronAPI is available
@@ -222,8 +222,9 @@ export function useAudioPlayer(getVolume: () => number) {
         return;
       }
 
-      // If playing, toggle pause
-      if (state.isPlaying && audioCtxRef.current) {
+      // If playing, toggle pause — unless the caller forces a fresh start
+      // (talker mode: each Enter re-speaks the new line, never pauses).
+      if (!opts?.forceRestart && state.isPlaying && audioCtxRef.current) {
         if (state.isPaused) {
           // Resume - but if text changed, start over
           if (text !== lastPlayedTextRef.current) {

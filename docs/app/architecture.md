@@ -75,13 +75,16 @@ electron/
 ├── preload.cjs            CJS variant used by the packaged app
 ├── tts-worker.ts          ONNX session + espeak-ng phonemizer
 ├── shared-audio.ts        WAV helpers (creation, speed, MP3 encoding)
+├── update-check.ts        Polls GitHub releases; surfaces update notices
+├── store.ts               Persisted prefs (userData/preferences.json)
 └── models/                Embedded ONNX model + voice bins
 
 electron-ui/
 ├── src/
 │   ├── App.tsx            Root component
-│   ├── components/        UI widgets (voice select, sliders, etc.)
-│   ├── hooks/             useAudioPlayer, useSettings
+│   ├── components/        UI widgets (voice select, sliders, About, etc.)
+│   ├── hooks/             useAudioPlayer, useSettings, useUpdateCheck
+│   ├── lib/               Small utilities (e.g. click feedback sound)
 │   ├── constants.ts       Defaults
 │   └── electron.d.ts      Types for window.electronAPI
 └── vite.config.ts

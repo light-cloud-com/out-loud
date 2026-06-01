@@ -4,6 +4,14 @@ interface SharedSettings {
   voice: string;
   volume: number;
   highlightChunk: boolean;
+  talkerMode: boolean;
+}
+
+interface UpdateInfo {
+  available: boolean;
+  latest: string;
+  notesUrl: string;
+  downloadUrl: string;
 }
 
 interface ElectronAPI {
@@ -20,10 +28,15 @@ interface ElectronAPI {
   onError: (callback: (error: string) => void) => () => void;
   setPlaying: (playing: boolean) => void;
   getAsset: (name: string) => Promise<string>;
+  getAppVersion: () => Promise<string>;
   quit: () => void;
   getSettings: () => Promise<SharedSettings>;
   updateSettings: (updates: Partial<SharedSettings>) => Promise<SharedSettings>;
   onSettingsUpdated: (callback: (settings: SharedSettings) => void) => () => void;
+  getUpdate: () => Promise<UpdateInfo | null>;
+  onUpdateAvailable: (callback: (update: UpdateInfo | null) => void) => () => void;
+  skipVersion: (version: string) => Promise<UpdateInfo | null>;
+  openExternal: (url: string) => void;
   isElectron: boolean;
   platform: string;
 }

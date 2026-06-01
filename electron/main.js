@@ -4,6 +4,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
 import { fileURLToPath } from "url";
+import { startUpdateChecks, stopUpdateChecks, getUpdate, skipVersion } from "./update-check.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // Load app icon from PNG file
@@ -289,6 +290,7 @@ let sharedSettings = {
     voice: "af_heart",
     volume: 80,
     highlightChunk: false,
+    talkerMode: false,
 };
 function getSharedSettings() {
     return { ...sharedSettings };
@@ -545,6 +547,8 @@ ipcMain.handle("app:asset", async (_event, name) => {
     }
     return "";
 });
+// App version (shown in the Help/About panel)
+ipcMain.handle("app:version", async () => app.getVersion());
 // Handle tray playing state
 ipcMain.on("tray:playing", (_event, playing) => {
     if (playing) {
@@ -552,6 +556,18 @@ ipcMain.on("tray:playing", (_event, playing) => {
     }
     else {
         stopTrayAnimation();
+    }
+});
+// ---- Update notice (GitHub latest release vs running version) ----
+// Current available-update info, or null when up to date.
+ipcMain.handle("update:get", async () => getUpdate());
+// Skip an update version; the banner stays hidden until something newer ships.
+ipcMain.handle("update:skip", async (_event, version) => skipVersion(version));
+// Open an external https link in the default browser (download link, release
+// page). Validated to http(s) so the renderer can't open arbitrary schemes.
+ipcMain.on("app:open-external", (_event, url) => {
+    if (typeof url === "string" && /^https?:\/\//i.test(url)) {
+        shell.openExternal(url);
     }
 });
 // Handle quit request
@@ -570,6 +586,7 @@ app.whenReady().then(() => {
     createTray();
     createWindow();
     preloadModel();
+    startUpdateChecks(() => mainWindow);
     app.on("activate", () => {
         if (mainWindow) {
             mainWindow.show();
@@ -597,6 +614,7 @@ app.on("before-quit", (event) => {
     // worker thread aborts → SIGABRT on macOS.
     event.preventDefault();
     isAppQuitting = true;
+    stopUpdateChecks();
     stopTrayAnimation();
     if (httpServer) {
         httpServer.close();

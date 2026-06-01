@@ -7,6 +7,7 @@ interface Settings {
   voice: string;
   volume: number;
   highlightChunk: boolean;
+  talkerMode: boolean;
 }
 
 const STORAGE_KEY = "out-loud-settings";
@@ -42,6 +43,7 @@ export function useSettings() {
             voice: sharedSettings.voice || s.voice,
             volume: sharedSettings.volume ?? s.volume,
             highlightChunk: sharedSettings.highlightChunk ?? s.highlightChunk,
+            talkerMode: sharedSettings.talkerMode ?? s.talkerMode,
           }));
         }
         isInitialized.current = true;
@@ -62,6 +64,7 @@ export function useSettings() {
           voice: sharedSettings.voice || s.voice,
           volume: sharedSettings.volume ?? s.volume,
           highlightChunk: sharedSettings.highlightChunk ?? s.highlightChunk,
+          talkerMode: sharedSettings.talkerMode ?? s.talkerMode,
         }));
       });
       return cleanup;

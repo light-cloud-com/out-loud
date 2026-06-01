@@ -1,5 +1,13 @@
 import { useMemo } from "react";
 
+// Pause tags the worker turns into silence (mirrors normalizePauseTags in
+// tts-worker.ts): [1s] / [500ms] / <pause=1s> / <break time="1s"/>.
+const PAUSE_TAG_SOURCE =
+  String.raw`\[\s*\d*\.?\d+\s*(?:ms|s)\s*\]` +
+  String.raw`|<\s*pause\s*=\s*"?\d*\.?\d+\s*(?:ms|s)?"?\s*\/?\s*>` +
+  String.raw`|<\s*break\s+time\s*=\s*["']?\d*\.?\d+\s*(?:ms|s)?["']?\s*\/?\s*>`;
+const PAUSE_TAG_RE = new RegExp(`^(?:${PAUSE_TAG_SOURCE})$`, "i");
+
 // Replicate server's text splitting logic exactly
 // Server splits on punctuation followed by space, creating text chunks and silence chunks
 function splitIntoChunks(
@@ -7,60 +15,57 @@ function splitIntoChunks(
 ): { text: string; start: number; end: number; isSilence: boolean }[] {
   const chunks: { text: string; start: number; end: number; isSilence: boolean }[] = [];
 
-  // Split pattern: punctuation followed by whitespace
-  // Server replaces: .\s+ ,\s+ ;\s+ :\s+ !\s+ ?\s+ \n+
-  const splitRegex = /([.,;:!?]\s+|\n+)/g;
+  // Split pattern: punctuation followed by whitespace (auto-pause), newlines,
+  // OR an explicit pause tag. Server replaces: .\s+ ,\s+ ;\s+ :\s+ !\s+ ?\s+ \n+
+  // and segments out [Ns] markers — so we count pause tags as silence chunks
+  // here too, keeping the highlight aligned with the audio through pauses.
+  const splitRegex = new RegExp(`([.,;:!?]\\s+|\\n+|${PAUSE_TAG_SOURCE})`, "gi");
 
   let lastIndex = 0;
   let match;
 
   while ((match = splitRegex.exec(text)) !== null) {
-    // Text before the punctuation
+    const delimiter = match[0];
+    const isPause = PAUSE_TAG_RE.test(delimiter);
+    const punct = delimiter.charAt(0);
+    // For ! and ?, the punctuation stays with the spoken text; pause tags don't.
+    const keepsPunct = !isPause && (punct === "!" || punct === "?");
+
+    // Text before the delimiter
     if (match.index > lastIndex) {
       const textBefore = text.slice(lastIndex, match.index);
       if (textBefore.trim()) {
-        // For ! and ?, the punctuation stays with the text
-        const punct = match[0].charAt(0);
-        if (punct === "!" || punct === "?") {
-          chunks.push({
-            text: textBefore + punct,
-            start: lastIndex,
-            end: match.index + 1,
-            isSilence: false,
-          });
-        } else {
-          chunks.push({
-            text: textBefore,
-            start: lastIndex,
-            end: match.index,
-            isSilence: false,
-          });
-        }
-      }
-    }
-
-    // The punctuation/whitespace becomes a silence chunk (not displayed but counted)
-    const punct = match[0].charAt(0);
-    if (punct !== "!" && punct !== "?") {
-      chunks.push({
-        text: match[0],
-        start: match.index,
-        end: match.index + match[0].length,
-        isSilence: true,
-      });
-    } else {
-      // For ! and ?, only the whitespace after is silence
-      if (match[0].length > 1) {
         chunks.push({
-          text: match[0].slice(1),
-          start: match.index + 1,
-          end: match.index + match[0].length,
-          isSilence: true,
+          text: keepsPunct ? textBefore + punct : textBefore,
+          start: lastIndex,
+          end: keepsPunct ? match.index + 1 : match.index,
+          isSilence: false,
         });
       }
     }
 
-    lastIndex = match.index + match[0].length;
+    // The delimiter (punctuation/whitespace/pause tag) becomes a silence chunk:
+    // counted toward the chunk index, never highlighted as spoken text.
+    if (keepsPunct) {
+      // For ! and ?, only the whitespace after is silence
+      if (delimiter.length > 1) {
+        chunks.push({
+          text: delimiter.slice(1),
+          start: match.index + 1,
+          end: match.index + delimiter.length,
+          isSilence: true,
+        });
+      }
+    } else {
+      chunks.push({
+        text: delimiter,
+        start: match.index,
+        end: match.index + delimiter.length,
+        isSilence: true,
+      });
+    }
+
+    lastIndex = match.index + delimiter.length;
   }
 
   // Remaining text after last match
@@ -113,6 +118,12 @@ interface TextInputProps {
    * Lets users who cleared the field recover the demo text without DevTools.
    */
   exampleText?: string;
+  /** Talker mode: plain Enter speaks (Shift+Enter inserts a newline). */
+  talkerMode?: boolean;
+  /** Called when the user asks to speak via the keyboard. */
+  onSpeak?: () => void;
+  /** Ref to the underlying textarea so the app can refocus it (Esc hotkey). */
+  inputRef?: React.RefObject<HTMLTextAreaElement>;
 }
 
 export function TextInput({
@@ -124,6 +135,9 @@ export function TextInput({
   totalChunks = 0,
   isPlaying = false,
   exampleText,
+  talkerMode = false,
+  onSpeak,
+  inputRef,
 }: TextInputProps) {
   const textChunks = useMemo(() => getTextChunks(value), [value]);
 
@@ -152,11 +166,22 @@ export function TextInput({
     <div className="mb-4 flex min-h-0 flex-1 flex-col">
       <div className="relative min-h-0 flex-1">
         <textarea
+          ref={inputRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            // Speak on Enter (talker mode) or ⌘/Ctrl+Enter (any mode).
+            // Shift+Enter always inserts a newline.
+            if (e.key === "Enter" && !e.shiftKey && (talkerMode || e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              onSpeak?.();
+            }
+          }}
           disabled={disabled}
+          autoFocus
+          aria-label="Text to speak"
           className={`h-full w-full select-text resize-none rounded-md border border-gray-700/50 bg-gray-800/50 px-3.5 py-3 text-base leading-relaxed text-gray-100 transition-all duration-200 placeholder:text-gray-500 hover:border-gray-600 hover:bg-gray-800/70 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${showHighlight ? "text-transparent caret-gray-100" : ""}`}
-          placeholder="Enter text to speak..."
+          placeholder={talkerMode ? "Type, press Enter to speak…" : "Enter text to speak..."}
         />
         {!value && !disabled && exampleText && (
           <button

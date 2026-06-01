@@ -1,16 +1,28 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { TextInput } from "./components/TextInput";
 import { VoiceSelect } from "./components/VoiceSelect";
 import { VolumeSlider } from "./components/VolumeSlider";
 import { PlaybackControls } from "./components/PlaybackControls";
 import { ProgressBar } from "./components/ProgressBar";
 import { SettingsCheckbox } from "./components/SettingsCheckbox";
+import { UpdateBanner } from "./components/UpdateBanner";
+import { AboutDialog } from "./components/AboutDialog";
 import { useAudioPlayer } from "./hooks/useAudioPlayer";
 import { useSettings } from "./hooks/useSettings";
+import { useUpdateCheck } from "./hooks/useUpdateCheck";
+import { playClick } from "./lib/sound";
 import { DEFAULT_TEXT } from "./constants";
 
 function App() {
   const { settings, updateSetting } = useSettings();
+  const { update, skipUpdate, open } = useUpdateCheck();
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [version, setVersion] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    window.electronAPI?.getAppVersion?.().then(setVersion);
+  }, []);
   // Read settings.text verbatim. DEFAULT_TEXT is seeded into settings once on
   // first launch (see useSettings); after that, the empty string is a legit
   // value the user chose. Falling back to DEFAULT_TEXT here would make the
@@ -32,6 +44,31 @@ function App() {
   const handlePlayPause = () => {
     player.play(text, settings.voice, settings.language);
   };
+
+  // Keyboard-driven "speak now" (Enter in talker mode, ⌘/Ctrl+Enter anywhere).
+  // Always re-speaks the current text; in talker mode it clears the box and
+  // gives an immediate audio click so it works with eyes closed.
+  const speak = useCallback(() => {
+    if (!text.trim()) return;
+    if (settings.talkerMode) playClick();
+    player.play(text, settings.voice, settings.language, { forceRestart: true });
+    if (settings.talkerMode) setText("");
+  }, [text, settings.talkerMode, settings.voice, settings.language, player]);
+
+  // Esc returns focus to the single text box from anywhere (or closes the
+  // About panel first). So the cursor is never "lost" off-screen.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (aboutOpen) {
+        setAboutOpen(false);
+      } else {
+        textareaRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [aboutOpen]);
 
   const handleQuit = () => {
     window.electronAPI?.quit();
@@ -63,6 +100,9 @@ function App() {
         Out Loud
       </h1>
 
+      {/* "New version available" notice (GitHub latest release vs running version) */}
+      <UpdateBanner update={update} onOpen={open} onSkip={skipUpdate} />
+
       {/* Main content */}
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1 items-stretch gap-3">
@@ -71,12 +111,17 @@ function App() {
             <TextInput
               value={text}
               onChange={setText}
-              disabled={controlsDisabled}
+              // In talker mode the box stays editable while audio plays, so you
+              // can type the next line before the last one finishes.
+              disabled={controlsDisabled && !settings.talkerMode}
               highlightChunk={settings.highlightChunk}
               currentChunkIndex={player.currentChunkIndex}
               totalChunks={player.totalChunks}
               isPlaying={player.isPlaying}
               exampleText={DEFAULT_TEXT}
+              talkerMode={settings.talkerMode}
+              onSpeak={speak}
+              inputRef={textareaRef}
             />
             <VoiceSelect
               language={settings.language}
@@ -119,16 +164,32 @@ function App() {
         />
 
         {/* Settings */}
-        <div className="mt-3">
+        <div className="mt-3 flex flex-col gap-2">
           <SettingsCheckbox
             label="Highlight current chunk"
             checked={settings.highlightChunk}
             onChange={(checked) => updateSetting("highlightChunk", checked)}
           />
+          <SettingsCheckbox
+            label="Talker mode (Enter speaks, then clears)"
+            checked={settings.talkerMode}
+            onChange={(checked) => updateSetting("talkerMode", checked)}
+          />
         </div>
 
         {/* Info display (hidden by default) */}
         <div className="mt-2 hidden text-xs text-gray-500">{player.info}</div>
+
+        {/* Screen-reader status: announces generation/playback transitions */}
+        <div className="sr-only" role="status" aria-live="polite">
+          {player.error
+            ? "Error generating speech"
+            : !player.isPlaying
+              ? ""
+              : player.chunkProgress < 100
+                ? "Generating speech"
+                : "Speaking"}
+        </div>
       </div>
 
       {/* Footer */}
@@ -140,13 +201,31 @@ function App() {
           <img src="./lightcloud-logo.png" alt="Light Cloud Labs" className="h-5 w-auto" />
           Light Cloud Labs
         </span>
-        <button
-          onClick={handleQuit}
-          className="w-[50px] cursor-pointer rounded-md border border-gray-600/50 bg-gray-700/80 py-2.5 text-xs font-medium text-gray-300 transition-all duration-200 hover:border-gray-500/50 hover:bg-gray-600 hover:text-white focus:outline-none focus:ring-2 focus:ring-gray-500/30 active:bg-gray-700"
-        >
-          Quit
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAboutOpen(true)}
+            aria-label="Help and about"
+            title="Help & About"
+            className="h-[34px] w-[34px] cursor-pointer rounded-md border border-gray-600/50 bg-gray-700/80 text-xs font-medium text-gray-300 transition-all duration-200 hover:border-gray-500/50 hover:bg-gray-600 hover:text-white focus:outline-none focus:ring-2 focus:ring-gray-500/30 active:bg-gray-700"
+          >
+            ?
+          </button>
+          <button
+            onClick={handleQuit}
+            className="w-[50px] cursor-pointer rounded-md border border-gray-600/50 bg-gray-700/80 py-2.5 text-xs font-medium text-gray-300 transition-all duration-200 hover:border-gray-500/50 hover:bg-gray-600 hover:text-white focus:outline-none focus:ring-2 focus:ring-gray-500/30 active:bg-gray-700"
+          >
+            Quit
+          </button>
+        </div>
       </div>
+
+      <AboutDialog
+        open={aboutOpen}
+        version={version}
+        talkerMode={settings.talkerMode}
+        onClose={() => setAboutOpen(false)}
+        onOpen={open}
+      />
     </div>
   );
 }
