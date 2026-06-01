@@ -49,26 +49,45 @@ flowchart LR
 
 ## Cutting a release
 
-From a clean `main` branch:
+From a clean `main` branch, **one command does everything**:
 
 ```bash
-# 1. Bump version (keeps package.json + creates git tag)
-npm version patch   # or minor / major
-# → commits "1.0.4" and tags it as "v1.0.4"
-
-# 2. Push commit + tag together
-git push --follow-tags
-
-# 3. Watch the workflow
-gh run watch
-
-# 4. After CI publishes the draft, notarize the macOS DMGs locally
-node scripts/notarize-release.mjs
-# → downloads DMGs, submits to Apple, staples, re-uploads. ~5–15 min per DMG.
-
-# 5. Test, then publish
-gh release edit v1.0.4 --repo light-cloud-com/out-loud --draft=false
+npm run release 1.0.8        # or: patch / minor / major
 ```
+
+[`scripts/release.mjs`](../../scripts/release.mjs) runs the whole pipeline end to
+end — no other manual steps:
+
+1. **Preflight** — verifies `gh` is authenticated and you're on a clean `main`
+   that matches `origin`.
+2. **Bump → PR → merge** — bumps the version on a `release-vX` branch, opens a
+   PR, waits for CI to pass, and squash-merges it (satisfies branch protection).
+3. **Tag** — tags the merged commit and pushes it, triggering the build.
+4. **Build** — waits for the macOS/Windows/Linux build + draft release to finish.
+5. **Publish** — un-drafts the release.
+6. **Notarize** — runs [`scripts/notarize-release.mjs`](../../scripts/notarize-release.mjs)
+   on the macOS DMGs (submit → staple → re-upload in place). This is the **last**
+   step, strictly after the builds are done and the release is published.
+
+Prerequisites: `gh` authenticated, the `out-loud-notary` keychain profile (see
+[Code signing](#code-signing)), and — importantly — the tag ruleset must
+**allow tag creation** by you. If the tag step fails with _"Cannot create ref
+due to creations being restricted,"_ remove the **Restrict creations** rule on
+`refs/tags/**` (or add yourself as a bypass actor) in the repo/org ruleset
+settings. The script prints the exact recovery commands if this happens.
+
+<details>
+<summary>Manual fallback (if you ever need to run the steps by hand)</summary>
+
+```bash
+npm version patch --no-git-tag-version   # bump, then PR + merge it normally
+git tag v1.0.8 && git push origin v1.0.8 # build → draft
+gh run watch                             # wait for the build to finish
+gh release edit v1.0.8 --repo light-cloud-com/out-loud --draft=false  # publish
+node scripts/notarize-release.mjs        # notarize the DMGs (last)
+```
+
+</details>
 
 The tag push triggers [`.github/workflows/release.yml`](../../.github/workflows/release.yml), which:
 
