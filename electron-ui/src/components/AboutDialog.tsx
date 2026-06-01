@@ -94,7 +94,7 @@ export function AboutDialog({ open, version, talkerMode, onClose, onOpen }: Abou
         </section>
 
         <section className="flex flex-wrap gap-x-4 gap-y-1 border-t border-gray-800 pt-3 text-gray-400">
-          <button className="hover:text-gray-200" onClick={() => onOpen("https://out-loud.pro")}>
+          <button className="hover:text-gray-200" onClick={() => onOpen("https://www.out-loud.io")}>
             Website
           </button>
           <button className="hover:text-gray-200" onClick={() => onOpen(REPO_URL)}>

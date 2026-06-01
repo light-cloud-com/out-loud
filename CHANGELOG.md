@@ -3,6 +3,20 @@
 All notable user-facing changes to Out Loud. See `git log` for the full
 history.
 
+## 1.0.7 — 2026-06-01
+
+### Fixes
+
+- **Correct website links.** The "Website" link in the Help/About panel, the
+  tray's "About Out Loud" item, and the Chrome extension's download banner all
+  pointed at the old `out-loud.pro`; they now open `https://www.out-loud.io`.
+
+### UI
+
+- **Example text shows off pauses.** The default example now uses inline
+  `<pause=…>` tags, so new users can immediately hear (and see) how pause
+  markers work.
+
 ## 1.0.6 — 2026-06-01
 
 ### Accessibility

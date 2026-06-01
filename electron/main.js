@@ -146,7 +146,7 @@ function createTray() {
             label: "About Out Loud",
             click: () => {
                 const { shell } = require("electron");
-                shell.openExternal("https://out-loud.pro");
+                shell.openExternal("https://www.out-loud.io");
             },
         },
         { type: "separator" },
