@@ -5,6 +5,7 @@ JSON templates for [GitHub Branch Rulesets](https://docs.github.com/en/repositor
 ## Files
 
 - **[`main-branch.json`](./main-branch.json)** — protect `main` against direct pushes, force-pushes, and deletion; require PR + CI to pass.
+- **[`release-tags.json`](./release-tags.json)** — protect `v*` release tags from deletion and force-push. Deliberately does **not** restrict _creation_ (so `npm run release` can push new tags); admins get an "always" bypass to fix mistakes.
 
 ## Apply
 
