@@ -52,7 +52,7 @@ See the [root README](./README.md#build-from-source) for the full build matrix.
 ## Code style
 
 - **TypeScript + React** in `electron/` and `electron-ui/`.
-- **Prettier** handles formatting — run `npm run fmt` or let the pre-commit hook do it.
+- **Prettier** handles formatting — run `npm run format` or let the pre-commit hook do it.
 - **ESLint** catches real bugs — run `npm run lint` (or `npm run lint:fix`).
 - **EditorConfig** (`.editorconfig`) keeps indentation consistent across editors.
 - Prefer small, well-named functions over comments that explain what the code does.
@@ -72,7 +72,7 @@ You generally won't need to think about formatting — it happens at commit time
 Run these locally and make sure they pass:
 
 ```bash
-npm run check       # lint + fmt:check + knip + electron:compile
+npm run check       # lint + format:check + knip + electron:compile
 npm test            # unit tests
 ```
 

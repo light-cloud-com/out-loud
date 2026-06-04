@@ -32,7 +32,7 @@ jobs:
         run: npm run lint
 
       - name: Format check
-        run: npm run fmt:check
+        run: npm run format:check
 
       - name: Knip (unused code/deps)
         run: npm run knip
