@@ -12,6 +12,8 @@ import { useSettings } from "./hooks/useSettings";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { playClick } from "./lib/sound";
 import { DEFAULT_TEXT } from "./constants";
+import iconUrl from "./assets/icon.png";
+import bmcButtonUrl from "./assets/bmc-button.svg";
 
 function App() {
   const { settings, updateSetting } = useSettings();
@@ -30,7 +32,7 @@ function App() {
   // The "Load example" button in TextInput re-injects DEFAULT_TEXT on demand
   // for users who cleared the field and want the demo back.
   const text = settings.text;
-  const setText = (newText: string) => updateSetting("text", newText);
+  const setText = useCallback((newText: string) => updateSetting("text", newText), [updateSetting]);
 
   const getVolume = useCallback(() => settings.volume, [settings.volume]);
   const player = useAudioPlayer(getVolume);
@@ -53,7 +55,7 @@ function App() {
     if (settings.talkerMode) playClick();
     player.play(text, settings.voice, settings.language, { forceRestart: true });
     if (settings.talkerMode) setText("");
-  }, [text, settings.talkerMode, settings.voice, settings.language, player]);
+  }, [text, settings.talkerMode, settings.voice, settings.language, player, setText]);
 
   // Esc returns focus to the single text box from anywhere (or closes the
   // About panel first). So the cursor is never "lost" off-screen.
@@ -74,11 +76,6 @@ function App() {
     window.electronAPI?.quit();
   };
 
-  const handleFooterClick = (e: React.MouseEvent) => {
-    e.preventDefault();
-    window.open("https://labs.light-cloud.com", "_blank");
-  };
-
   const controlsDisabled = player.isPlaying && !player.isPaused;
 
   // The Electron main window is only frameless on macOS (titleBarStyle:
@@ -97,7 +94,7 @@ function App() {
       {/* Header */}
       <div className="mb-4 flex items-center justify-between">
         <h1 className="flex items-center gap-2.5 text-lg">
-          <img src="./icon.png" alt="Out Loud" className="h-7 w-7" />
+          <img src={iconUrl} alt="Out Loud" className="h-7 w-7" />
           Out Loud
         </h1>
         <a
@@ -111,7 +108,7 @@ function App() {
           className="inline-flex cursor-pointer items-center transition-opacity hover:opacity-90"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
-          <img src="./bmc-button.svg" alt="Buy me a coffee" className="h-8 w-auto" />
+          <img src={bmcButtonUrl} alt="Buy me a coffee" className="h-8 w-auto" />
         </a>
       </div>
 

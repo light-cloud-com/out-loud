@@ -1,3 +1,5 @@
+import iconUrl from "../assets/icon.png";
+
 interface AboutDialogProps {
   open: boolean;
   version: string;
@@ -36,7 +38,7 @@ export function AboutDialog({ open, version, talkerMode, onClose, onOpen }: Abou
       >
         <div className="mb-3 flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-100">
-            <img src="./icon.png" alt="" className="h-5 w-5" />
+            <img src={iconUrl} alt="" className="h-5 w-5" />
             Out Loud
             <span className="font-normal text-gray-500">v{version || "—"}</span>
           </h2>
