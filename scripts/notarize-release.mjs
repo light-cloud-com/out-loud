@@ -91,8 +91,19 @@ function notarizeAndStaple(dmgPath) {
   // Embed the ticket in the DMG so Gatekeeper trusts it offline.
   run("xcrun", ["stapler", "staple", dmgPath]);
 
-  // Quick sanity check the staple worked.
-  run("spctl", ["--assess", "--type", "install", "--verbose", dmgPath]);
+  // Quick sanity check the staple worked. A DMG is a disk image, not a .pkg
+  // installer, so `--type install` reports "no usable signature". Gatekeeper
+  // evaluates a notarized DMG under the "open downloaded file" policy, so
+  // assess it with `--type open` against the stapled notarization ticket.
+  run("spctl", [
+    "--assess",
+    "--type",
+    "open",
+    "--context",
+    "context:primary-signature",
+    "--verbose",
+    dmgPath,
+  ]);
 }
 
 async function main() {
