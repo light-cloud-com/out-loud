@@ -9,6 +9,7 @@ Deeper docs for contributors and maintainers. For the user-facing overview (feat
 - [Extensions](#extensions)
 - [Build and distribution](#build-and-distribution)
 - [Contributing](#contributing)
+- [Support](#support)
 - [How the pieces fit](#how-the-pieces-fit)
 
 ## Map
@@ -56,6 +57,14 @@ The Chrome and Safari extensions are thin UI layers over the HTTP API.
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — dev setup, code style, PR checklist
 - [`../.github/PULL_REQUEST_TEMPLATE.md`](../.github/PULL_REQUEST_TEMPLATE.md) — used automatically when opening a PR
 - [`../.github/rulesets/`](../.github/rulesets/) — branch protection ruleset templates
+
+## Support
+
+Out Loud is free and open source. If it's useful to you, you can support its development:
+
+<a href="https://buymeacoffee.com/julia_hk"><img src="./assets/bmc-button.svg" alt="Buy me a coffee" height="48" /></a>
+
+[buymeacoffee.com/julia_hk](https://buymeacoffee.com/julia_hk)
 
 ## How the pieces fit
 

@@ -95,10 +95,25 @@ function App() {
       <div className="h-8 w-full" style={topStripStyle} />
 
       {/* Header */}
-      <h1 className="mb-4 flex items-center gap-2.5 text-lg">
-        <img src="./icon.png" alt="Out Loud" className="h-7 w-7" />
-        Out Loud
-      </h1>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="flex items-center gap-2.5 text-lg">
+          <img src="./icon.png" alt="Out Loud" className="h-7 w-7" />
+          Out Loud
+        </h1>
+        <a
+          href="https://buymeacoffee.com/julia_hk"
+          onClick={(e) => {
+            e.preventDefault();
+            window.open("https://buymeacoffee.com/julia_hk", "_blank");
+          }}
+          aria-label="Buy me a coffee"
+          title="Buy me a coffee"
+          className="inline-flex cursor-pointer items-center transition-opacity hover:opacity-90"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        >
+          <img src="./bmc-button.svg" alt="Buy me a coffee" className="h-8 w-auto" />
+        </a>
+      </div>
 
       {/* "New version available" notice (GitHub latest release vs running version) */}
       <UpdateBanner update={update} onOpen={open} onSkip={skipUpdate} />
@@ -163,20 +178,6 @@ function App() {
           stats={player.stats}
         />
 
-        {/* Settings */}
-        <div className="mt-3 flex flex-col gap-2">
-          <SettingsCheckbox
-            label="Highlight current chunk"
-            checked={settings.highlightChunk}
-            onChange={(checked) => updateSetting("highlightChunk", checked)}
-          />
-          <SettingsCheckbox
-            label="Talker mode (Enter speaks, then clears)"
-            checked={settings.talkerMode}
-            onChange={(checked) => updateSetting("talkerMode", checked)}
-          />
-        </div>
-
         {/* Info display (hidden by default) */}
         <div className="mt-2 hidden text-xs text-gray-500">{player.info}</div>
 
@@ -194,31 +195,36 @@ function App() {
 
       {/* Footer */}
       <div className="mt-auto flex items-center justify-between pt-2">
-        <span
-          onClick={handleFooterClick}
-          className="inline-flex cursor-pointer items-center gap-2 text-[11px] text-gray-600 no-underline hover:text-gray-400"
-        >
-          <img src="./lightcloud-logo.png" alt="Light Cloud Labs" className="h-5 w-auto" />
-          Light Cloud Labs
-        </span>
+        {/* Settings */}
+        <div className="mt-3 flex flex-col gap-2">
+          <SettingsCheckbox
+            label="Highlight current chunk"
+            checked={settings.highlightChunk}
+            onChange={(checked) => updateSetting("highlightChunk", checked)}
+          />
+          <SettingsCheckbox
+            label="Talker mode (Enter speaks, then clears)"
+            checked={settings.talkerMode}
+            onChange={(checked) => updateSetting("talkerMode", checked)}
+          />
+        </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setAboutOpen(true)}
             aria-label="Help and about"
             title="Help & About"
-            className="h-[34px] w-[34px] cursor-pointer rounded-md border border-gray-600/50 bg-gray-700/80 text-xs font-medium text-gray-300 transition-all duration-200 hover:border-gray-500/50 hover:bg-gray-600 hover:text-white focus:outline-none focus:ring-2 focus:ring-gray-500/30 active:bg-gray-700"
+            className="h-[38px] w-[38px] cursor-pointer rounded-md border border-gray-600/50 bg-gray-700/80 text-xs font-medium text-gray-300 transition-all duration-200 hover:border-gray-500/50 hover:bg-gray-600 hover:text-white focus:outline-none focus:ring-2 focus:ring-gray-500/30 active:bg-gray-700"
           >
             ?
           </button>
           <button
             onClick={handleQuit}
-            className="w-[50px] cursor-pointer rounded-md border border-gray-600/50 bg-gray-700/80 py-2.5 text-xs font-medium text-gray-300 transition-all duration-200 hover:border-gray-500/50 hover:bg-gray-600 hover:text-white focus:outline-none focus:ring-2 focus:ring-gray-500/30 active:bg-gray-700"
+            className="h-[38px] w-[50px] cursor-pointer rounded-md border border-gray-600/50 bg-gray-700/80 py-2.5 text-xs font-medium text-gray-300 transition-all duration-200 hover:border-gray-500/50 hover:bg-gray-600 hover:text-white focus:outline-none focus:ring-2 focus:ring-gray-500/30 active:bg-gray-700"
           >
             Quit
           </button>
         </div>
       </div>
-
       <AboutDialog
         open={aboutOpen}
         version={version}

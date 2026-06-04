@@ -3,9 +3,9 @@
   "version": "1.0.8",
   "description": "Free, open-source, 100% offline AI text-to-speech desktop app powered by Kokoro-82M.",
   "author": {
-    "name": "Light Cloud Labs",
+    "name": "Julia Kafarska",
     "email": "labs@light-cloud.com",
-    "url": "https://labs.light-cloud.com"
+    "url": "https://out-loud.io"
   },
   "license": "MIT",
   "homepage": "https://github.com/light-cloud-com/out-loud#readme",

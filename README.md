@@ -19,6 +19,10 @@
 </p>
 
 <p align="center">
+  <a href="https://buymeacoffee.com/julia_hk"><img src="./docs/assets/bmc-button.svg" alt="Buy me a coffee" height="48" /></a>
+</p>
+
+<p align="center">
   <img src="./docs/assets/demo.gif" alt="Out Loud demo" width="720" />
 </p>
 
@@ -40,6 +44,7 @@
 - [Scripts](#scripts)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
+- [Support](#support)
 - [License](#license)
 - [Credits](#credits)
 
@@ -266,6 +271,14 @@ Deeper docs live in [`docs/`](./docs/README.md):
 ## Contributing
 
 Issues, pull requests, translations, and new voices are all welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) to get started.
+
+## Support
+
+Out Loud is free and open source. If it's useful to you, you can support its development:
+
+<a href="https://buymeacoffee.com/julia_hk"><img src="./docs/assets/bmc-button.svg" alt="Buy me a coffee" height="48" /></a>
+
+[buymeacoffee.com/julia_hk](https://buymeacoffee.com/julia_hk)
 
 ## License
 
