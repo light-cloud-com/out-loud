@@ -13,9 +13,10 @@
 //   2. Bump version on a release branch, open a PR, wait for CI, squash-merge.
 //   3. Tag the merged commit and push → triggers the Release build workflow.
 //   4. Wait for the macOS/Windows/Linux builds + draft release to finish.
-//   5. Publish the release (un-draft).
-//   6. Notarize the macOS DMGs (scripts/notarize-release.mjs) — the LAST step,
-//      strictly after the builds are done and the release is published.
+//   5. Notarize the macOS DMGs (scripts/notarize-release.mjs) while the release
+//      is still a DRAFT — "Immutable releases" freezes assets at publish time,
+//      so the stapled DMGs must be in place BEFORE un-drafting.
+//   6. Publish the release (un-draft) — captures the notarized assets.
 //
 // Prerequisites (one-time):
 //   - `gh` authenticated with write access to the repo.
@@ -251,12 +252,16 @@ if (!built || (built.assets || []).length === 0) {
   console.log(`• Build artifacts already attached to ${tag} — skipping the build wait.`);
 }
 
-// ---- Stage D: publish (un-draft) — idempotent -------------------------------
-run("gh", ["release", "edit", tag, "--repo", REPO, "--draft=false"]);
-
-// ---- Stage E: notarize the macOS DMGs — the LAST step -----------------------
-// notarize-release.mjs is idempotent (skips already-stapled DMGs) and re-uploads
-// in place via gh ... --clobber, so it's safe on an already-published release.
+// ---- Stage D: notarize the macOS DMGs WHILE STILL A DRAFT -------------------
+// MUST run before publish: GitHub "Immutable releases" freezes a release's
+// assets at publish (un-draft) time, so notarize-then-reupload only works while
+// the release is still a mutable draft. notarize-release.mjs is idempotent
+// (skips already-stapled DMGs) and re-uploads in place via gh ... --clobber.
 run("node", [join(projectRoot, "scripts", "notarize-release.mjs"), tag]);
+
+// ---- Stage E: publish (un-draft) — idempotent; freezes the stapled assets ---
+// With the DMGs already notarized + stapled above, publishing now captures the
+// correct, notarized assets into the immutable release.
+run("gh", ["release", "edit", tag, "--repo", REPO, "--draft=false"]);
 
 console.log(`\n✅ Released ${tag}: https://github.com/${REPO}/releases/tag/${tag}`);

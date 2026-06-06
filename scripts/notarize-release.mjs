@@ -45,6 +45,26 @@ function run(cmd, args, opts = {}) {
   return res;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Run a command, retrying on failure with linear backoff. Used for steps that
+// can fail transiently — chiefly `stapler staple` right after notarization,
+// when Apple's ticket CDN hasn't yet published the ticket that `notarytool
+// submit --wait` just reported as Accepted (a few seconds of lag is common).
+async function runWithRetry(cmd, args, { attempts = 5, delayMs = 15_000, label } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const printable = `${cmd} ${args.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}`;
+    console.log(`\n$ ${printable}${attempt > 1 ? `   (attempt ${attempt}/${attempts})` : ""}`);
+    const res = spawnSync(cmd, args, { stdio: "inherit" });
+    if (res.status === 0) return res;
+    if (attempt === attempts) {
+      throw new Error(`${label || cmd} failed after ${attempts} attempts (exit ${res.status})`);
+    }
+    console.log(`  ${label || cmd} failed (exit ${res.status}); retrying in ${delayMs / 1000}s…`);
+    await sleep(delayMs);
+  }
+}
+
 function runCapture(cmd, args) {
   const res = spawnSync(cmd, args, { encoding: "utf8" });
   if (res.status !== 0) {
@@ -63,7 +83,7 @@ function macDmgsForTag(tag) {
     .map((a) => a.name);
 }
 
-function notarizeAndStaple(dmgPath) {
+async function notarizeAndStaple(dmgPath) {
   console.log(`\n=== ${dmgPath} ===`);
 
   // Quick precheck: if already stapled, skip the slow Apple round-trip.
@@ -88,22 +108,46 @@ function notarizeAndStaple(dmgPath) {
     "2h",
   ]);
 
-  // Embed the ticket in the DMG so Gatekeeper trusts it offline.
-  run("xcrun", ["stapler", "staple", dmgPath]);
+  // Embed the ticket in the DMG so Gatekeeper trusts it offline. Retry: the
+  // ticket can take a few seconds to propagate to Apple's CDN after `submit
+  // --wait` returns Accepted, so a bare `staple` here can spuriously fail.
+  await runWithRetry("xcrun", ["stapler", "staple", dmgPath], { label: "stapler staple" });
 
-  // Quick sanity check the staple worked. A DMG is a disk image, not a .pkg
-  // installer, so `--type install` reports "no usable signature". Gatekeeper
-  // evaluates a notarized DMG under the "open downloaded file" policy, so
-  // assess it with `--type open` against the stapled notarization ticket.
-  run("spctl", [
-    "--assess",
-    "--type",
-    "open",
-    "--context",
-    "context:primary-signature",
-    "--verbose",
-    dmgPath,
-  ]);
+  // Verify the ticket is actually embedded. `stapler validate` is the
+  // authoritative check for a stapled DMG — DO NOT use `spctl --assess` on the
+  // unmounted .dmg here: a disk image has no code signature of its own, so
+  // spctl reports "no usable signature" even when the ticket is correctly
+  // stapled. The real Gatekeeper assessment applies to the .app inside, which
+  // we check below after mounting.
+  run("xcrun", ["stapler", "validate", dmgPath]);
+}
+
+// Mount the stapled DMG and assess the .app the way Gatekeeper actually will,
+// confirming the end-user "open downloaded app" experience is clean.
+function assessAppInside(dmgPath) {
+  const attach = spawnSync(
+    "hdiutil",
+    ["attach", dmgPath, "-nobrowse", "-noverify", "-noautoopen"],
+    { encoding: "utf8" }
+  );
+  const mount = (attach.stdout || "")
+    .split("\n")
+    .map((l) => l.match(/(\/Volumes\/.+)$/)?.[1])
+    .filter(Boolean)
+    .pop();
+  if (!mount) {
+    console.log(`  (could not mount ${dmgPath} for app assessment — skipping)`);
+    return;
+  }
+  try {
+    const apps = spawnSync("sh", ["-c", `ls -d "${mount}"/*.app`], { encoding: "utf8" });
+    const app = (apps.stdout || "").trim().split("\n")[0];
+    if (app) {
+      run("spctl", ["-a", "-vvv", "-t", "exec", app]);
+    }
+  } finally {
+    spawnSync("hdiutil", ["detach", mount, "-quiet"]);
+  }
 }
 
 async function main() {
@@ -128,18 +172,40 @@ async function main() {
     const patterns = dmgs.flatMap((d) => ["--pattern", d]);
     run("gh", ["release", "download", tag, "--repo", REPO, "--dir", workDir, ...patterns]);
 
+    // Process each DMG independently — a failure on one (e.g. Apple rejects a
+    // single arch) must not prevent the others from being notarized.
+    const succeeded = [];
+    const failed = [];
     for (const name of dmgs) {
       const path = join(workDir, name);
-      if (!existsSync(path)) {
-        throw new Error(`Expected file ${path} after gh download, but it's missing.`);
+      try {
+        if (!existsSync(path)) {
+          throw new Error(`Expected file ${path} after gh download, but it's missing.`);
+        }
+        await notarizeAndStaple(path);
+        assessAppInside(path);
+        succeeded.push(name);
+      } catch (err) {
+        console.error(`\n[notarize-release] ${name} FAILED: ${err.message}`);
+        failed.push(name);
       }
-      notarizeAndStaple(path);
     }
 
-    // Upload all stapled DMGs in one call (--clobber overwrites the
-    // unstapled versions that CI uploaded).
-    const uploadPaths = dmgs.map((d) => join(workDir, d));
-    run("gh", ["release", "upload", tag, "--repo", REPO, "--clobber", ...uploadPaths]);
+    // Re-upload only the DMGs we actually stapled (--clobber overwrites the
+    // unstapled versions that CI uploaded). Never push a half-processed DMG.
+    if (succeeded.length > 0) {
+      const uploadPaths = succeeded.map((d) => join(workDir, d));
+      run("gh", ["release", "upload", tag, "--repo", REPO, "--clobber", ...uploadPaths]);
+    }
+
+    console.log(`\n--- Summary -------------------------------------------------`);
+    console.log(
+      `Notarized + stapled + re-uploaded (${succeeded.length}): ${succeeded.join(", ") || "none"}`
+    );
+    if (failed.length > 0) {
+      console.log(`Failed (${failed.length}): ${failed.join(", ")}`);
+      throw new Error(`${failed.length} of ${dmgs.length} DMG(s) failed to notarize.`);
+    }
 
     console.log(`\nAll ${dmgs.length} DMG(s) notarized, stapled, and re-uploaded.`);
     console.log(

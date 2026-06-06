@@ -64,10 +64,12 @@ end — no other manual steps:
    PR, waits for CI to pass, and squash-merges it (satisfies branch protection).
 3. **Tag** — tags the merged commit and pushes it, triggering the build.
 4. **Build** — waits for the macOS/Windows/Linux build + draft release to finish.
-5. **Publish** — un-drafts the release.
-6. **Notarize** — runs [`scripts/notarize-release.mjs`](../../scripts/notarize-release.mjs)
-   on the macOS DMGs (submit → staple → re-upload in place). This is the **last**
-   step, strictly after the builds are done and the release is published.
+5. **Notarize** — runs [`scripts/notarize-release.mjs`](../../scripts/notarize-release.mjs)
+   on the macOS DMGs (submit → staple → re-upload in place) **while the release is
+   still a draft**. This must happen before publish: GitHub's "Immutable releases"
+   freezes a release's assets at publish time, so the stapled DMGs have to be in
+   place first.
+6. **Publish** — un-drafts the release, capturing the notarized assets.
 
 Prerequisites: `gh` authenticated, the `out-loud-notary` keychain profile (see
 [Code signing](#code-signing)), and — importantly — the tag ruleset must
@@ -83,8 +85,8 @@ settings. The script prints the exact recovery commands if this happens.
 npm version patch --no-git-tag-version   # bump, then PR + merge it normally
 git tag v1.0.8 && git push origin v1.0.8 # build → draft
 gh run watch                             # wait for the build to finish
-gh release edit v1.0.8 --repo light-cloud-com/out-loud --draft=false  # publish
-node scripts/notarize-release.mjs        # notarize the DMGs (last)
+node scripts/notarize-release.mjs        # notarize the DMGs WHILE STILL A DRAFT
+gh release edit v1.0.8 --repo light-cloud-com/out-loud --draft=false  # publish last
 ```
 
 </details>
@@ -150,7 +152,9 @@ We tried two earlier patterns and both broke under Apple's notary outages:
 
 Apple can take minutes or hours — it doesn't matter; the only thing waiting is your local terminal. The CI workflow has already long-since finished.
 
-The script is idempotent: if a DMG is already stapled, it skips the submit step and just re-verifies. Safe to retry after partial failures.
+The script is idempotent: if a DMG is already stapled, it skips the submit step and just re-verifies. It also isolates per-DMG failures (one arch failing won't abort the others), retries the `stapler staple` step (Apple's ticket CDN can lag a few seconds behind `notarytool submit --wait`), and only re-uploads DMGs it successfully stapled. Safe to retry after partial failures.
+
+> **Order matters with Immutable releases.** Run this script **while the release is still a draft**, then publish. GitHub freezes a release's assets the moment it's published (un-drafted) and that immutability is **permanent** — it can't be undone by toggling the repo setting later, so a published release's unnotarized DMGs can never be replaced. `release.mjs` enforces this order automatically.
 
 Prerequisite: store credentials in your Keychain once.
 
