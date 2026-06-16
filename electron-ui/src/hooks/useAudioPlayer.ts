@@ -1,4 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { track } from "../lib/analytics";
+
+// How many chunks ahead of the playhead the worker may generate during normal
+// playback (backpressure). Download/export lifts this cap to generate fully.
+const AHEAD = 20;
 
 function formatTime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -24,6 +29,7 @@ interface AudioPlayerState {
   currentChunkIndex: number;
   totalChunks: number;
   canDownload: boolean;
+  isExporting: boolean;
 }
 
 export function useAudioPlayer(getVolume: () => number) {
@@ -38,6 +44,7 @@ export function useAudioPlayer(getVolume: () => number) {
     currentChunkIndex: -1,
     totalChunks: 0,
     canDownload: false,
+    isExporting: false,
   });
 
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -61,7 +68,21 @@ export function useAudioPlayer(getVolume: () => number) {
   // Cleanup listeners ref
   const cleanupListenersRef = useRef<(() => void)[]>([]);
 
+  // Flow control: the active generation's id, the last buffer-target we sent
+  // (monotonic during normal playback), and export bookkeeping.
+  const currentReqIdRef = useRef<string | null>(null);
+  const lastSentTargetRef = useRef<number>(-1);
+  const pendingExportRef = useRef<boolean>(false);
+  const exportWavRef = useRef<() => void>(() => {});
+
   const stopAudio = useCallback(() => {
+    // Cancel any in-flight worker generation so it doesn't keep running (and a
+    // backpressure-parked generation doesn't sit idle) after teardown/Stop.
+    if (currentReqIdRef.current) {
+      window.electronAPI?.cancelGeneration(currentReqIdRef.current);
+      currentReqIdRef.current = null;
+    }
+    pendingExportRef.current = false;
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
@@ -83,6 +104,8 @@ export function useAudioPlayer(getVolume: () => number) {
       ...s,
       isPlaying: false,
       isPaused: false,
+      isExporting: false,
+      canDownload: false,
       currentChunkIndex: -1,
     }));
     // Notify main process
@@ -128,6 +151,18 @@ export function useAudioPlayer(getVolume: () => number) {
     const elapsed = Math.max(0, now - playbackStartTimeRef.current);
     const remaining = Math.max(0, scheduledEndTimeRef.current - now);
     const currentChunk = getCurrentChunkIndex(now);
+
+    // Backpressure: keep the worker generating ~AHEAD chunks past the playhead.
+    // Monotonic during normal playback (only send when the target grows); a
+    // forced full export sets lastSentTargetRef to MAX so these no-op until an
+    // export-cancel re-arms it. Pausing stops this loop, so generation idles.
+    if (currentChunk >= 0 && !allChunksReceivedRef.current && currentReqIdRef.current) {
+      const target = currentChunk + AHEAD;
+      if (target > lastSentTargetRef.current) {
+        lastSentTargetRef.current = target;
+        window.electronAPI?.setBufferTarget(currentReqIdRef.current, target);
+      }
+    }
 
     // Calculate display duration with estimation during streaming
     let displayDuration: number;
@@ -244,12 +279,23 @@ export function useAudioPlayer(getVolume: () => number) {
           }
         } else {
           // Pause
+          const now = audioCtxRef.current.currentTime;
+          const elapsed = Math.max(0, now - playbackStartTimeRef.current);
+          const duration = scheduledEndTimeRef.current - playbackStartTimeRef.current;
+          const wasCached =
+            cachedKeyRef.current === `${text}|${voice}|${language}` && allChunksReceivedRef.current;
           audioCtxRef.current.suspend();
           if (animationFrameRef.current) {
             cancelAnimationFrame(animationFrameRef.current);
             animationFrameRef.current = null;
           }
           setState((s) => ({ ...s, isPaused: true, info: "Paused" }));
+          track("quick_speak_paused", {
+            ...(duration > 0
+              ? { progress_pct: Math.min(100, Math.max(0, (elapsed / duration) * 100)) }
+              : {}),
+            was_cached: wasCached,
+          });
           return;
         }
       }
@@ -333,6 +379,13 @@ export function useAudioPlayer(getVolume: () => number) {
       cachedAudioBuffersRef.current = [];
       cachedKeyRef.current = currentKey;
 
+      // Mint a request id for this generation so we can drive its buffer target
+      // and cancel it. (stopAudio above already cancelled any previous one.)
+      const reqId = crypto.randomUUID();
+      currentReqIdRef.current = reqId;
+      lastSentTargetRef.current = -1;
+      pendingExportRef.current = false;
+
       // Set text-based estimate
       const CHARS_PER_SECOND = 14;
       textBasedEstimateRef.current = text.trim().length / CHARS_PER_SECOND;
@@ -363,6 +416,9 @@ export function useAudioPlayer(getVolume: () => number) {
 
         // Set up IPC listeners for audio chunks
         const cleanupChunk = window.electronAPI.onAudioChunk(async (data) => {
+          // Ignore stale chunks from a just-cancelled request that arrive after
+          // this play() swapped in its listener (rapid restart race).
+          if (data.requestId && data.requestId !== reqId) return;
           const { chunkIndex, totalChunks, base64 } = data;
           totalChunksRef.current = totalChunks;
           chunksReceivedRef.current++;
@@ -419,6 +475,9 @@ export function useAudioPlayer(getVolume: () => number) {
             ...s,
             chunkProgress: pct,
             info: `Generating...`,
+            // Download is usable mid-stream — it's the "make an audio file"
+            // action that forces full generation (see download()).
+            canDownload: true,
           }));
         });
 
@@ -441,6 +500,13 @@ export function useAudioPlayer(getVolume: () => number) {
             info: "Playing...",
             canDownload: true,
           }));
+
+          // If a Download/export was waiting on full generation, build it now.
+          if (pendingExportRef.current) {
+            pendingExportRef.current = false;
+            setState((s) => ({ ...s, isExporting: false }));
+            exportWavRef.current();
+          }
         });
 
         const cleanupError = window.electronAPI.onError((error) => {
@@ -455,11 +521,14 @@ export function useAudioPlayer(getVolume: () => number) {
 
         cleanupListenersRef.current = [cleanupChunk, cleanupComplete, cleanupError];
 
-        // Start TTS generation via IPC
+        // Start TTS generation via IPC. initialTarget caps generation to ~AHEAD
+        // chunks until updatePlayback advances it (backpressure for long docs).
         await window.electronAPI.generateStreamingTTS({
           voice,
           text,
           speed: 1,
+          requestId: reqId,
+          initialTarget: AHEAD,
         });
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e);
@@ -475,27 +544,28 @@ export function useAudioPlayer(getVolume: () => number) {
     [state.isPlaying, state.isPaused, stopAudio, getVolume, updatePlayback, updateCachedPlayback]
   );
 
-  // Cleanup listeners on unmount
+  // Cleanup listeners + cancel any active generation on unmount.
   useEffect(() => {
     return () => {
       cleanupListenersRef.current.forEach((cleanup) => cleanup());
+      if (currentReqIdRef.current) {
+        window.electronAPI?.cancelGeneration(currentReqIdRef.current);
+        currentReqIdRef.current = null;
+      }
     };
   }, []);
 
-  // Download combined audio as WAV file
-  const download = useCallback(() => {
+  // Build a WAV from all generated chunks and trigger a browser download.
+  const exportWav = useCallback(() => {
     if (cachedAudioBuffersRef.current.length === 0) return;
 
-    // Combine all audio buffers
     const buffers = cachedAudioBuffersRef.current;
     const sampleRate = buffers[0].sampleRate;
     const numChannels = buffers[0].numberOfChannels;
     const totalLength = buffers.reduce((sum, b) => sum + b.length, 0);
 
-    // Create offline context to render combined audio
     const offlineCtx = new OfflineAudioContext(numChannels, totalLength, sampleRate);
     let offset = 0;
-
     for (const buffer of buffers) {
       const source = offlineCtx.createBufferSource();
       source.buffer = buffer;
@@ -505,17 +575,14 @@ export function useAudioPlayer(getVolume: () => number) {
     }
 
     offlineCtx.startRendering().then((renderedBuffer) => {
-      // Convert to WAV
       const wavData = audioBufferToWav(renderedBuffer);
       const blob = new Blob([wavData], { type: "audio/wav" });
       const url = URL.createObjectURL(blob);
 
-      // Generate filename with timestamp
       const now = new Date();
       const timestamp = now.toISOString().replace(/[:.T]/g, "-").slice(0, 19);
       const filename = `out-loud-${timestamp}.wav`;
 
-      // Trigger download
       const a = document.createElement("a");
       a.href = url;
       a.download = filename;
@@ -523,8 +590,48 @@ export function useAudioPlayer(getVolume: () => number) {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+
+      track("audio_downloaded", { duration_seconds: renderedBuffer.duration });
     });
   }, []);
+
+  // Keep a stable ref so the per-play onStreamComplete handler can build the WAV
+  // once a forced full generation finishes.
+  useEffect(() => {
+    exportWavRef.current = exportWav;
+  }, [exportWav]);
+
+  // Download = "turn this into an audio file". If everything is already
+  // generated (cache or stream complete), export now; otherwise force full
+  // generation (lift the backpressure cap) and export when it completes.
+  const download = useCallback(() => {
+    if (allChunksReceivedRef.current) {
+      exportWav();
+      return;
+    }
+    if (!currentReqIdRef.current) return;
+    pendingExportRef.current = true;
+    setState((s) => ({ ...s, isExporting: true }));
+    // Pin the sent-target to MAX so updatePlayback's monotonic guard stops
+    // sending currentChunk+AHEAD, which would otherwise re-cap (the worker SETS
+    // the target). cancelExport resets this to re-arm normal buffering.
+    lastSentTargetRef.current = Number.MAX_SAFE_INTEGER;
+    window.electronAPI?.forceFullGeneration(currentReqIdRef.current);
+  }, [exportWav]);
+
+  // Cancel an in-progress export: stop forcing full generation and re-arm the
+  // normal ~AHEAD buffer from the playhead, so playback continues uninterrupted.
+  const cancelExport = useCallback(() => {
+    if (!pendingExportRef.current) return;
+    pendingExportRef.current = false;
+    setState((s) => ({ ...s, isExporting: false }));
+    if (currentReqIdRef.current && audioCtxRef.current) {
+      const currentChunk = getCurrentChunkIndex(audioCtxRef.current.currentTime);
+      const target = Math.max(0, currentChunk) + AHEAD;
+      lastSentTargetRef.current = target;
+      window.electronAPI?.setBufferTarget(currentReqIdRef.current, target);
+    }
+  }, [getCurrentChunkIndex]);
 
   return {
     ...state,
@@ -532,6 +639,7 @@ export function useAudioPlayer(getVolume: () => number) {
     stop,
     setVolume,
     download,
+    cancelExport,
   };
 }
 

@@ -1,10 +1,30 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  Tray,
+  Menu,
+  nativeImage,
+  shell,
+  dialog,
+  screen,
+} from "electron";
 import { Worker } from "worker_threads";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
 import { fileURLToPath } from "url";
+import WordExtractor from "word-extractor";
 import { startUpdateChecks, stopUpdateChecks, getUpdate, skipVersion } from "./update-check.js";
+import { getRecents, putRecent, removeRecent, type RecentEntry } from "./reader-recents.js";
+import {
+  initTelemetry,
+  track,
+  trackFromRenderer,
+  trackSessionStart,
+  shutdownTelemetry,
+  lengthBucket,
+} from "./telemetry.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +61,38 @@ const pendingRequests = new Map<
 
 // Track if app is quitting
 let isAppQuitting = false;
+
+// The in-flight quick-speak generation id (for buffer-target / cancel / quit).
+let activeQuickSpeakRequest: string | null = null;
+
+// Per-session usage counters, summarised into the session_ended event.
+let ttsRequestsThisSession = 0;
+let docsOpenedThisSession = 0;
+// Distinct document paths opened this session, so docsOpenedThisSession counts
+// distinct documents rather than every resume / re-read of the same file.
+const openedPathsThisSession = new Set<string>();
+
+// Map a worker error into a coarse category WITHOUT ever forwarding the raw
+// message (which can contain file paths or content). Best-effort keyword match.
+function ttsErrorCategory(message?: string): string {
+  const m = (message || "").toLowerCase();
+  if (m.includes("model")) return "model_load";
+  if (m.includes("voice")) return "voice_load";
+  if (m.includes("phonem") || m.includes("espeak")) return "phonemize";
+  if (m.includes("wav") || m.includes("mp3") || m.includes("ffmpeg") || m.includes("encod"))
+    return "encoding";
+  if (m.includes("onnx") || m.includes("session") || m.includes("infer")) return "inference";
+  return "other";
+}
+
+// Reader: in-flight windowed-generation requests (separate from quick-speak's
+// pendingRequests). Chunks/unitDone/complete are forwarded straight to the
+// renderer, keyed by requestId; the renderer's engine matches them up.
+const readerRequests = new Set<string>();
+let activeReaderRequest: string | null = null;
+
+// Extra width added to the window while the sidebar is open (removed on close).
+let sidebarExtraWidth = 0;
 
 // Tray animation for playing state
 let trayAnimationInterval: NodeJS.Timeout | null = null;
@@ -213,6 +265,21 @@ function createTTSWorker() {
     const { requestId, type, data, error } = message;
     console.log("[Worker] Message:", type, requestId ? `(${requestId.slice(0, 8)})` : "");
 
+    // Reader (windowed generation): forward straight to the renderer.
+    if (
+      type === "unitChunk" ||
+      type === "unitDone" ||
+      type === "genComplete" ||
+      type === "aborted"
+    ) {
+      mainWindow?.webContents.send(`reader:${type}`, { requestId, ...(data || {}) });
+      if (type === "genComplete" || type === "aborted") {
+        readerRequests.delete(requestId);
+        if (activeReaderRequest === requestId) activeReaderRequest = null;
+      }
+      return;
+    }
+
     if (type === "progress") {
       mainWindow?.webContents.send("tts:progress", data);
       const pending = pendingRequests.get(requestId);
@@ -246,6 +313,20 @@ function createTTSWorker() {
         stack ? `\n  stack: ${stack}` : "",
         platform ? `\n  platform: ${platform}/${arch}` : ""
       );
+      // Category + platform only — never the raw message/stack/paths.
+      track("tts_error", {
+        error_category: ttsErrorCategory(error),
+        mode: readerRequests.has(requestId) ? "reader" : "quick_speak",
+        platform: platform || process.platform,
+        arch: arch || process.arch,
+      });
+      // Reader-side failure → notify the renderer's engine.
+      if (readerRequests.has(requestId)) {
+        readerRequests.delete(requestId);
+        if (activeReaderRequest === requestId) activeReaderRequest = null;
+        mainWindow?.webContents.send("reader:error", { requestId, error });
+        return;
+      }
       const pending = pendingRequests.get(requestId);
       if (pending) {
         const richError = new Error(error);
@@ -277,22 +358,92 @@ async function preloadModel() {
   }
 }
 
-function generateTTS(params: any, onChunk?: (data: any) => void): Promise<any> {
+function generateTTS(params: any, onChunk?: (data: any) => void, requestId?: string): Promise<any> {
   return new Promise((resolve, reject) => {
     if (!ttsWorker) {
       reject(new Error("TTS Worker not initialized"));
       return;
     }
 
-    const requestId = crypto.randomUUID();
-    pendingRequests.set(requestId, { resolve, reject, onChunk });
+    // Use the renderer-minted id when provided (quick-speak, so it can target /
+    // cancel the request); otherwise mint one (HTTP extension path).
+    const id = requestId || crypto.randomUUID();
+    pendingRequests.set(id, { resolve, reject, onChunk });
 
     ttsWorker.postMessage({
       type: "generate",
-      requestId,
+      requestId: id,
       data: params,
     });
   });
+}
+
+// ---- Reader: windowed generation bridge ----
+
+function readerGenerate(params: {
+  requestId: string;
+  units: { id: string; text: string }[];
+  voice: string;
+}) {
+  if (!ttsWorker) throw new Error("TTS Worker not initialized");
+  // A brand-new request supersedes any previous one still running (seek/restart).
+  if (activeReaderRequest && activeReaderRequest !== params.requestId) {
+    ttsWorker.postMessage({ type: "cancel", requestId: activeReaderRequest });
+    readerRequests.delete(activeReaderRequest);
+  }
+  const lang = getVoiceLang(params.voice);
+  readerRequests.add(params.requestId);
+  activeReaderRequest = params.requestId;
+  ttsWorker.postMessage({
+    type: "generateUnits",
+    requestId: params.requestId,
+    data: {
+      units: params.units,
+      lang,
+      voiceFormula: params.voice,
+      model: "model_q8f16",
+      // CPU keeps the ONNX session shared with quick-speak (no thrash). CoreML
+      // is a future tuning lever for macOS if generation can't keep up.
+      acceleration: "cpu",
+    },
+  });
+}
+
+function readerCancel(requestId: string) {
+  if (ttsWorker) ttsWorker.postMessage({ type: "cancel", requestId });
+  readerRequests.delete(requestId);
+  if (activeReaderRequest === requestId) activeReaderRequest = null;
+}
+
+function readFileForReader(filePath: string): { path: string; name: string; bytes: ArrayBuffer } {
+  const data = fs.readFileSync(filePath);
+  const bytes = data.buffer.slice(
+    data.byteOffset,
+    data.byteOffset + data.byteLength
+  ) as ArrayBuffer;
+  return { path: filePath, name: path.basename(filePath), bytes };
+}
+
+// Opening the sidebar grows the window width by ~20% so the existing content
+// keeps its size; closing shrinks it back by the same amount (preserving any
+// manual resize the user did while it was open).
+function setSidebarWindow(open: boolean) {
+  if (!mainWindow) return;
+  const b = mainWindow.getBounds();
+  const wa = screen.getDisplayMatching(b).workArea;
+  if (open) {
+    if (sidebarExtraWidth > 0) return; // already widened
+    const extra = Math.round(b.width * 0.2);
+    const width = Math.min(b.width + extra, wa.width);
+    sidebarExtraWidth = width - b.width;
+    if (sidebarExtraWidth <= 0) return;
+    mainWindow.setBounds({ ...b, width }, true);
+  } else {
+    if (sidebarExtraWidth <= 0) return;
+    const width = Math.max(b.width - sidebarExtraWidth, 400);
+    sidebarExtraWidth = 0;
+    mainWindow.setBounds({ ...b, width }, true);
+  }
 }
 
 function getVoiceLang(voiceId: string): string {
@@ -340,7 +491,6 @@ interface SharedSettings {
   voice: string;
   volume: number;
   highlightChunk: boolean;
-  talkerMode: boolean;
 }
 
 let sharedSettings: SharedSettings = {
@@ -349,7 +499,6 @@ let sharedSettings: SharedSettings = {
   voice: "af_heart",
   volume: 80,
   highlightChunk: false,
-  talkerMode: false,
 };
 
 function getSharedSettings(): SharedSettings {
@@ -463,6 +612,12 @@ function createExtensionServer() {
           const lang = getVoiceLang(voice);
 
           console.log("[HTTP] Streaming request:", { voice, lang, textLength: input?.length });
+          track("extension_api_request", {
+            endpoint: "stream",
+            voice_id: voice,
+            text_length_bucket: lengthBucket(typeof input === "string" ? input.length : 0),
+            format: "wav",
+          });
 
           res.writeHead(200, {
             "Content-Type": "application/octet-stream",
@@ -520,6 +675,12 @@ function createExtensionServer() {
           const lang = getVoiceLang(voice);
 
           console.log("[HTTP] Blocking request:", { voice, lang, textLength: input?.length });
+          track("extension_api_request", {
+            endpoint: "blocking",
+            voice_id: voice,
+            text_length_bucket: lengthBucket(typeof input === "string" ? input.length : 0),
+            format: response_format === "mp3" ? "mp3" : "wav",
+          });
 
           // Collect all chunks
           const chunks: Buffer[] = [];
@@ -591,18 +752,34 @@ ipcMain.handle("settings:get", async () => {
 // settings:updated broadcast here — the renderer already has the new state
 // (it called us with it) and a broadcast would race with later keystrokes.
 ipcMain.handle("settings:update", async (_event, updates: Partial<SharedSettings>) => {
+  // settings_changed captures discrete setting toggles that DON'T already have a
+  // dedicated event. We exclude:
+  //   - text:            user content (never sent),
+  //   - voice/language:  each has its own renderer event (avoid double-counting),
+  //   - volume:          a continuous slider that fires per drag-tick (noise).
+  // The renderer sends the full settings object on every change, so we diff
+  // against the current values to report only the key(s) that actually changed.
+  const SKIP = new Set(["text", "voice", "language", "volume"]);
+  const current = sharedSettings as unknown as Record<string, unknown>;
+  const next = (updates || {}) as unknown as Record<string, unknown>;
+  const changedKeys = Object.keys(next).filter((k) => !SKIP.has(k) && next[k] !== current[k]);
+  if (changedKeys.length > 0) track("settings_changed", { changed_keys: changedKeys });
   return updateSharedSettings(updates, { broadcast: false });
 });
 
 // Start streaming TTS generation
 ipcMain.handle("tts:stream:start", async (_event, params) => {
-  const { voice, text, speed } = params;
+  const { voice, text, speed, requestId, initialTarget } = params;
   const lang = getVoiceLang(voice);
+  const startedAt = Date.now();
 
   console.log("[TTS] Streaming request:", { voice, lang, textLength: text.length });
 
+  // Track the active quick-speak request so it can be cancelled on quit.
+  if (typeof requestId === "string") activeQuickSpeakRequest = requestId;
+
   try {
-    await generateTTS(
+    const result = await generateTTS(
       {
         text,
         lang,
@@ -612,23 +789,46 @@ ipcMain.handle("tts:stream:start", async (_event, params) => {
         format: "wav",
         acceleration: "cpu",
         streaming: true,
+        // Backpressure: generate only this many chunks ahead until the renderer
+        // advances the target (undefined → full generation for non-renderer callers).
+        initialTarget: typeof initialTarget === "number" ? initialTarget : undefined,
       },
       (msg) => {
         if (msg.type === "chunk") {
           const { chunkIndex, totalChunks, base64 } = msg.data;
+          // Tag with the request id so the renderer can drop stale chunks from a
+          // just-cancelled request that arrive after a new play() started.
           mainWindow?.webContents.send("tts:chunk", {
             chunkIndex,
             totalChunks,
             base64,
+            requestId,
           });
         }
-      }
+      },
+      typeof requestId === "string" ? requestId : undefined
     );
+
+    if (activeQuickSpeakRequest === requestId) activeQuickSpeakRequest = null;
+
+    // A cancelled request resolves quietly — do NOT fire the global tts:complete
+    // (it has no requestId and would land on whatever stream started next,
+    // disabling its backpressure / truncating its export).
+    if (result?.cancelled) return "cancelled";
 
     // Send completion signal
     mainWindow?.webContents.send("tts:complete");
+    ttsRequestsThisSession += 1;
+    track("tts_synthesis_completed", {
+      mode: "quick_speak",
+      duration_ms: Date.now() - startedAt,
+      text_length_bucket: lengthBucket(typeof text === "string" ? text.length : 0),
+      voice_id: voice,
+      language: lang,
+    });
     return "ok";
   } catch (error: any) {
+    if (activeQuickSpeakRequest === requestId) activeQuickSpeakRequest = null;
     console.error("[TTS] Streaming error:", error);
     // Forward a richer payload so the renderer can show enough detail for
     // users (especially on Windows) to file a meaningful bug report.
@@ -639,6 +839,115 @@ ipcMain.handle("tts:stream:start", async (_event, params) => {
     throw error;
   }
 });
+
+// ============ Reader IPC ============
+
+// Open one or more documents via the native dialog. Returns the selected file
+// paths (bytes are read on demand via reader:readFile; parsing happens in the
+// renderer). Returns null on cancel.
+ipcMain.handle("reader:openFiles", async () => {
+  if (!mainWindow) return null;
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: "Open documents",
+    properties: ["openFile", "multiSelections"],
+    filters: [
+      {
+        name: "Documents",
+        extensions: [
+          "txt",
+          "text",
+          "md",
+          "markdown",
+          "epub",
+          "pdf",
+          "docx",
+          "doc",
+          "mobi",
+          "azw",
+          "azw3",
+          "prc",
+        ],
+      },
+      { name: "All Files", extensions: ["*"] },
+    ],
+  });
+  if (res.canceled || res.filePaths.length === 0) return null;
+  return res.filePaths.map((p) => ({ path: p, name: path.basename(p) }));
+});
+
+// Extract text from a legacy binary Word .doc. word-extractor is Node-only
+// (OLE2/CFB binary parsing), so it runs here in the main process and returns
+// plain text. Raw parse errors (RangeError on malformed/encrypted files) are
+// caught and turned into a friendly message before crossing IPC.
+ipcMain.handle("reader:extractDoc", async (_event, bytes: Uint8Array) => {
+  try {
+    const doc = await new WordExtractor().extract(Buffer.from(bytes));
+    return { text: doc.getBody() };
+  } catch {
+    return {
+      error: "Couldn't read this Word document — it may be corrupt, encrypted, or not a .doc file.",
+    };
+  }
+});
+
+// Re-read a file by path (recents / resume).
+ipcMain.handle("reader:readFile", async (_event, filePath: string) => {
+  try {
+    const file = readFileForReader(filePath);
+    if (!openedPathsThisSession.has(filePath)) {
+      openedPathsThisSession.add(filePath);
+      docsOpenedThisSession += 1;
+    }
+    return file;
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+});
+
+// Start / cancel windowed generation (fire-and-forget; results stream back as
+// reader:* events).
+ipcMain.on("reader:generate", (_event, params) => {
+  try {
+    readerGenerate(params);
+  } catch (err) {
+    mainWindow?.webContents.send("reader:error", {
+      requestId: params?.requestId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+ipcMain.on("reader:cancel", (_event, requestId: string) => readerCancel(requestId));
+
+// ---- Quick-speak generation flow control (backpressure) ----
+// The renderer caps how far ahead the worker generates, forces full generation
+// on Download, and cancels generation on Stop/unmount. All fire-and-forget,
+// keyed by the renderer-minted requestId (mirrors reader:cancel).
+ipcMain.on("tts:setBufferTarget", (_event, payload: { requestId: string; targetChunk: number }) => {
+  if (payload?.requestId) {
+    ttsWorker?.postMessage({
+      type: "setTarget",
+      requestId: payload.requestId,
+      data: { targetChunk: payload.targetChunk },
+    });
+  }
+});
+ipcMain.on("tts:cancel", (_event, requestId: string) => {
+  if (requestId) {
+    if (activeQuickSpeakRequest === requestId) activeQuickSpeakRequest = null;
+    ttsWorker?.postMessage({ type: "cancel", requestId });
+  }
+});
+
+// Toggle the sidebar: grows/shrinks the window width by ~20%.
+ipcMain.handle("app:setSidebar", async (_event, open: boolean) => {
+  track("sidebar_toggled", { open: !!open });
+  setSidebarWindow(open);
+});
+
+// Recents (sidebar): files + text "sessions". Text is stored locally only.
+ipcMain.handle("reader:recents:get", async () => getRecents());
+ipcMain.handle("reader:recents:put", async (_event, entry: RecentEntry) => putRecent(entry));
+ipcMain.handle("reader:recents:remove", async (_event, key: string) => removeRecent(key));
 
 // Get app assets
 ipcMain.handle("app:asset", async (_event, name: string) => {
@@ -669,14 +978,39 @@ ipcMain.on("tray:playing", (_event, playing: boolean) => {
 ipcMain.handle("update:get", async () => getUpdate());
 
 // Skip an update version; the banner stays hidden until something newer ships.
-ipcMain.handle("update:skip", async (_event, version: string) => skipVersion(version));
+ipcMain.handle("update:skip", async (_event, version: string) => {
+  track("update_skipped", { skipped_version: version, current_version: app.getVersion() });
+  return skipVersion(version);
+});
 
 // Open an external https link in the default browser (download link, release
 // page). Validated to http(s) so the renderer can't open arbitrary schemes.
 ipcMain.on("app:open-external", (_event, url: string) => {
   if (typeof url === "string" && /^https?:\/\//i.test(url)) {
+    // Record only the destination domain + a coarse link type — never the full
+    // URL (which can carry path/query identifiers).
+    try {
+      const host = new URL(url).hostname.replace(/^www\./, "");
+      const linkType = /github\.com/.test(host)
+        ? "github"
+        : /buymeacoffee|ko-fi|patreon/.test(host)
+          ? "donate"
+          : /out-loud\.io/.test(host)
+            ? "website"
+            : "other";
+      track("external_link_clicked", { domain: host, link_type: linkType });
+    } catch {
+      /* unparsable URL — skip telemetry, still open below */
+    }
     shell.openExternal(url);
   }
+});
+
+// Renderer-originated usage events. Fire-and-forget; the payload is untrusted —
+// telemetry.trackFromRenderer() strips identity/content and re-stamps trusted
+// context, so the renderer can neither spoof identity nor smuggle content.
+ipcMain.on("telemetry:event", (_event, payload: { name?: unknown; properties?: unknown }) => {
+  trackFromRenderer(payload?.name, payload?.properties);
 });
 
 // Handle quit request
@@ -692,6 +1026,11 @@ ipcMain.on("app:quit", () => {
 // ============ App Lifecycle ============
 
 app.whenReady().then(() => {
+  // Init telemetry first so app_launched and early events are captured. No-op
+  // when not configured / disabled; dev builds send too, tagged is_dev.
+  initTelemetry(isDev);
+  trackSessionStart();
+
   createTTSWorker();
   createExtensionServer();
   createTray();
@@ -712,20 +1051,30 @@ app.on("window-all-closed", () => {
   // Don't quit - keep running in tray
 });
 
-// Track whether we've already finished the synchronous teardown so the
-// second pass through before-quit (after our app.quit() re-fire) doesn't
-// loop forever.
+// Guards against a second before-quit re-entering teardown (e.g. the user
+// clicking Quit again during the brief telemetry-flush window before app.exit).
 let quitCleanupDone = false;
 
 app.on("before-quit", (event) => {
-  if (quitCleanupDone) return;
+  // A second before-quit (e.g. the user clicking Quit again during the brief
+  // telemetry-flush window) just blocks the default quit and lets the in-flight
+  // hard exit complete.
+  if (quitCleanupDone) {
+    event.preventDefault();
+    return;
+  }
+  quitCleanupDone = true;
 
-  // Defer the actual quit until we've torn down the worker. If we let
-  // Electron continue here, V8 starts freeing the Node environment and
-  // calls stop_sub_worker_contexts → pthread_join on the TTS worker. With
-  // the worker still alive (especially mid ONNX inference or mid graceful
-  // shutdown), the native ONNX destructor isn't reentrant-safe and the
-  // worker thread aborts → SIGABRT on macOS.
+  // End the process with app.exit() rather than app.quit(). app.quit() lets
+  // Electron free the Node environment, which joins the TTS worker thread
+  // (stop_sub_worker_contexts → pthread_join). If the worker is mid ONNX
+  // inference, the native ONNX teardown isn't reentrant-safe and the worker
+  // aborts → SIGABRT on macOS (this is the "quit while audio is playing" crash).
+  // worker.terminate() has the SAME hazard: force-unwinding a worker that's
+  // blocked in a synchronous native call crashes the same way. app.exit() skips
+  // all of it — it exits immediately, so the OS reclaims the worker thread
+  // without running its destructors. Nothing the worker owns needs graceful
+  // release (audio is streamed over IPC, never written to disk by the worker).
   event.preventDefault();
   isAppQuitting = true;
 
@@ -737,25 +1086,24 @@ app.on("before-quit", (event) => {
     httpServer = null;
   }
 
+  // Cooperatively cancel the in-flight quick-speak generation so the worker
+  // stops issuing new ONNX runs before we hard-exit (best-effort; an in-flight
+  // run can't be interrupted — app.exit() below is the real teardown).
+  if (activeQuickSpeakRequest && ttsWorker) {
+    ttsWorker.postMessage({ type: "cancel", requestId: activeQuickSpeakRequest });
+    activeQuickSpeakRequest = null;
+  }
+
   for (const [, pending] of pendingRequests) {
     pending.reject(new Error("App is shutting down"));
   }
   pendingRequests.clear();
 
-  const finishQuit = () => {
-    quitCleanupDone = true;
-    app.quit();
-  };
-
-  if (ttsWorker) {
-    const worker = ttsWorker;
-    ttsWorker = null;
-    // Hard terminate — don't wait for the worker to await its own ONNX
-    // session release. The OS reclaims everything on exit anyway, and a
-    // synchronous kill before V8 teardown is the only reliable way to
-    // avoid the JoinThread crash documented above.
-    worker.terminate().then(finishQuit, finishQuit);
-  } else {
-    finishQuit();
-  }
+  // Give telemetry a brief, bounded window to flush session_ended (it persists
+  // to disk first, so anything unsent is delivered on the next launch), then
+  // hard-exit. shutdownTelemetry always resolves, so quit never hangs.
+  shutdownTelemetry({
+    tts_requests: ttsRequestsThisSession,
+    docs_opened: docsOpenedThisSession,
+  }).finally(() => app.exit(0));
 });

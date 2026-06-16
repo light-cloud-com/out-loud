@@ -3,7 +3,6 @@ import iconUrl from "../assets/icon.png";
 interface AboutDialogProps {
   open: boolean;
   version: string;
-  talkerMode: boolean;
   onClose: () => void;
   onOpen: (url: string) => void;
 }
@@ -21,7 +20,7 @@ function Row({ keys, desc }: { keys: string; desc: string }) {
   );
 }
 
-export function AboutDialog({ open, version, talkerMode, onClose, onOpen }: AboutDialogProps) {
+export function AboutDialog({ open, version, onClose, onOpen }: AboutDialogProps) {
   if (!open) return null;
 
   return (
@@ -53,24 +52,19 @@ export function AboutDialog({ open, version, talkerMode, onClose, onOpen }: Abou
 
         <section className="mb-4">
           <h3 className="mb-1 font-semibold text-gray-200">Keyboard shortcuts</h3>
-          {talkerMode && <Row keys="Enter" desc="Speak the text, then clear it" />}
-          <Row keys="⌘/Ctrl + Enter" desc="Speak the text" />
+          <Row keys="Enter" desc="Speak the text, then clear it" />
           <Row keys="Shift + Enter" desc="New line (don't speak)" />
           <Row keys="Esc" desc="Jump back to the text box" />
         </section>
 
         <section className="mb-4">
-          <h3 className="mb-1 font-semibold text-gray-200">Talker mode</h3>
+          <h3 className="mb-1 font-semibold text-gray-200">Type &amp; speak</h3>
           <p className="text-gray-400">
-            Turn on <span className="text-gray-300">Talker mode</span> in Settings for a
-            type-and-speak flow: press <span className="text-gray-300">Enter</span> to speak and
-            clear the box, and keep typing the next line while the last is still playing — the text
-            box never locks and the cursor never leaves it.{" "}
-            {talkerMode ? (
-              <span className="text-emerald-300">It's on.</span>
-            ) : (
-              <span className="text-gray-500">It's currently off.</span>
-            )}
+            Press <span className="text-gray-300">Enter</span> to speak the text and clear the box,
+            and keep typing the next line while the last is still playing — the text box never locks
+            and the cursor never leaves it. Use <span className="text-gray-300">Shift+Enter</span>{" "}
+            for a new line, or the <span className="text-gray-300">Play</span> button to speak
+            without clearing.
           </p>
         </section>
 

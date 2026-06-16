@@ -10,7 +10,7 @@
 
 <p align="center">
   A native desktop app for macOS, Windows, and Linux that reads text aloud with natural-sounding voices.<br/>
-  Everything runs locally on your machine. No cloud, no accounts, no telemetry.
+  Everything runs locally on your machine. No cloud, no accounts — your text never leaves your computer.
 </p>
 
 <p align="center">
@@ -55,7 +55,8 @@
 - Built on [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), an open-weight TTS model ranked highly on the [TTS Arena](https://huggingface.co/spaces/TTS-AGI/TTS-Arena)
 - Accessible **Talker mode** (type-and-speak) and inline **pause tags** — see [Speaking tips](#speaking-tips-pauses--shortcuts)
 - Desktop app with menu-bar / system-tray integration
-- Tells you in-app when a new version is available (the only network call — checks GitHub releases)
+- Tells you in-app when a new version is available (checks GitHub releases)
+- Sends anonymous, content-free usage stats (which features get used — never your text, files, or document titles) to guide what we build next
 - Chrome & Safari extensions to read any webpage in one click
 - Local HTTP API on port `51730` for extensions and scripts
 

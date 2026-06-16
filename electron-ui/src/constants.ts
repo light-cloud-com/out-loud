@@ -9,5 +9,4 @@ export const DEFAULT_SETTINGS = {
   voice: "af_heart",
   volume: 80,
   highlightChunk: true,
-  talkerMode: false,
 };

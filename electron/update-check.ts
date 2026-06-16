@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from "electron";
 import { getPrefs, setPrefs } from "./store.js";
+import { track } from "./telemetry.js";
 
 // ============ Update check ===================================================
 // Polls GitHub's "latest release" and, when it's newer than the running
@@ -26,6 +27,7 @@ const POLL_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const FETCH_TIMEOUT_MS = 8000;
 
 let cachedUpdate: UpdateInfo | null = null;
+let lastAnnounced: string | null = null;
 let pollTimer: NodeJS.Timeout | null = null;
 let windowGetter: () => BrowserWindow | null = () => null;
 
@@ -133,6 +135,14 @@ async function refresh() {
   setPrefs({ lastCheckAt: Date.now() });
   if (!release) return;
   cachedUpdate = computeUpdate(release);
+  // Announce once per newly-detected version (the poll runs every 6h).
+  if (cachedUpdate && cachedUpdate.latest !== lastAnnounced) {
+    lastAnnounced = cachedUpdate.latest;
+    track("update_available", {
+      latest_version: cachedUpdate.latest,
+      current_version: app.getVersion(),
+    });
+  }
   broadcast();
 }
 

@@ -15,6 +15,7 @@ electron/**/*.js.map
 
 # Vendored libraries
 chrome-extension/lib/
+electron-ui/src/reader/vendor/
 
 # Lockfiles
 package-lock.json

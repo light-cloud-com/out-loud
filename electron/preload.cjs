@@ -12,6 +12,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return await ipcRenderer.invoke("tts:stream:start", params);
   },
 
+  // Buffer-ahead flow control (quick-speak), fire-and-forget, keyed by requestId.
+  setBufferTarget: (requestId, targetChunk) => {
+    ipcRenderer.send("tts:setBufferTarget", { requestId, targetChunk });
+  },
+  forceFullGeneration: (requestId) => {
+    ipcRenderer.send("tts:setBufferTarget", { requestId, targetChunk: Number.MAX_SAFE_INTEGER });
+  },
+  cancelGeneration: (requestId) => {
+    ipcRenderer.send("tts:cancel", requestId);
+  },
+
   // Listen for audio chunks
   onAudioChunk: (callback) => {
     const handler = (_event, data) => callback(data);
@@ -92,6 +103,55 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Open an https link in the default browser.
   openExternal: (url) => {
     ipcRenderer.send("app:open-external", url);
+  },
+
+  // Fire-and-forget anonymous usage event. The main process attaches all
+  // identity/context and strips anything that isn't shape-only — pass metadata
+  // only, never text/content.
+  track: (name, properties) => {
+    ipcRenderer.send("telemetry:event", { name, properties });
+  },
+
+  // Toggle the sidebar; grows/shrinks the window width by ~20%.
+  setSidebar: (open) => {
+    return ipcRenderer.invoke("app:setSidebar", open);
+  },
+
+  // ---- Document reader ----
+  reader: {
+    openFiles: () => ipcRenderer.invoke("reader:openFiles"),
+    readFile: (filePath) => ipcRenderer.invoke("reader:readFile", filePath),
+    extractDoc: (bytes) => ipcRenderer.invoke("reader:extractDoc", bytes),
+    generate: (params) => ipcRenderer.send("reader:generate", params),
+    cancel: (requestId) => ipcRenderer.send("reader:cancel", requestId),
+    getRecents: () => ipcRenderer.invoke("reader:recents:get"),
+    putRecent: (entry) => ipcRenderer.invoke("reader:recents:put", entry),
+    removeRecent: (key) => ipcRenderer.invoke("reader:recents:remove", key),
+    onUnitChunk: (callback) => {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on("reader:unitChunk", handler);
+      return () => ipcRenderer.removeListener("reader:unitChunk", handler);
+    },
+    onUnitDone: (callback) => {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on("reader:unitDone", handler);
+      return () => ipcRenderer.removeListener("reader:unitDone", handler);
+    },
+    onComplete: (callback) => {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on("reader:genComplete", handler);
+      return () => ipcRenderer.removeListener("reader:genComplete", handler);
+    },
+    onAborted: (callback) => {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on("reader:aborted", handler);
+      return () => ipcRenderer.removeListener("reader:aborted", handler);
+    },
+    onError: (callback) => {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on("reader:error", handler);
+      return () => ipcRenderer.removeListener("reader:error", handler);
+    },
   },
 
   // Check if running in Electron

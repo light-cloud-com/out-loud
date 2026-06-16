@@ -11,11 +11,17 @@ export interface AppPrefs {
   skippedVersion: string | null;
   // Epoch ms of the last update check.
   lastCheckAt: number;
+  // Stable, anonymous, random install id used only to count distinct installs
+  // and de-dupe sessions in usage analytics. NOT derived from anything about
+  // the machine, user, hardware, OS account, or any document — it is an opaque
+  // random UUID and carries no PII. Generated lazily on first use.
+  installId: string | null;
 }
 
 const DEFAULT_PREFS: AppPrefs = {
   skippedVersion: null,
   lastCheckAt: 0,
+  installId: null,
 };
 
 let cache: AppPrefs | null = null;
@@ -46,4 +52,14 @@ export function setPrefs(updates: Partial<AppPrefs>): AppPrefs {
     console.error("[Prefs] Failed to persist preferences:", err);
   }
   return next;
+}
+
+// Return the stable anonymous install id, generating and persisting one on
+// first call. A plain random v4 UUID — no machine/user/hardware linkage.
+export function getOrCreateInstallId(): string {
+  const existing = getPrefs().installId;
+  if (existing) return existing;
+  const id = crypto.randomUUID();
+  setPrefs({ installId: id });
+  return id;
 }

@@ -8,7 +8,7 @@ import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
 // @ts-ignore
 import ESpeakNg from "espeak-ng";
-import { createWavBuffer, modifyWavSpeed, wavToMp3 } from "./shared-audio.js";
+import { createWavBuffer } from "./shared-audio.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // Resolve a path that may live inside app.asar to its real on-disk location
@@ -62,6 +62,10 @@ let cachedModelId = null;
 let currentRequestId = null;
 // Shutdown flag to abort ongoing work
 let isShuttingDown = false;
+// Per-request cancellation for the reader's windowed generation. Main adds a
+// requestId here via a `cancel` message; the generateUnits loop checks it
+// between units / inferences / yields and stops promptly.
+const abortedRequests = new Set();
 // Tokenizer vocab - all keys must be properly quoted strings
 const vocab = {
     ";": 1,
@@ -329,7 +333,15 @@ function normalizePauseTags(text) {
         .replace(/\[\s*([0-9]*\.?[0-9]+)\s*(ms|s)\s*\]/gi, (_, n, u) => toMarker(n, u));
 }
 function sanitizeText(rawText) {
-    return normalizePauseTags(rawText)
+    return (normalizePauseTags(rawText)
+        // Ellipsis (… or 3+ dots) → a longer, trailing-off pause. MUST run before
+        // the single-period rule, otherwise "..." would be half-consumed.
+        .replace(/\s*(?:…|\.{3,})\s*/g, "[0.5s]")
+        // Em-dash — always a break, whether spaced ("a — b") or tight ("a—b").
+        .replace(/\s*—\s*/g, "[0.3s]")
+        // En-dash / hyphen used as a dash: only when spaced on BOTH sides, so
+        // number ranges ("5–10") and compound words ("well-known") are untouched.
+        .replace(/\s+[–-]\s+/g, "[0.3s]")
         .replace(/\.\s+/g, "[0.4s]")
         .replace(/,\s+/g, "[0.2s]")
         .replace(/;\s+/g, "[0.4s]")
@@ -337,7 +349,7 @@ function sanitizeText(rawText) {
         .replace(/!\s+/g, "![0.1s]")
         .replace(/\?\s+/g, "?[0.1s]")
         .replace(/\n+/g, "[0.4s]")
-        .trim();
+        .trim());
 }
 function segmentText(sanitizedText) {
     const regex = /(\[[0-9]+(?:\.[0-9]+)?s\])/g;
@@ -441,12 +453,62 @@ function trimWaveform(waveform) {
     return waveform.slice(startSample, endSample);
 }
 // createWavBuffer, buildAtempoChain, modifyWavSpeed, wavToMp3 are imported from shared-audio.ts
+// Get or create the ONNX session, reusing the module-level cache (shared with
+// generateVoice) when the model matches.
+async function ensureSession(model, acceleration) {
+    if (cachedSession && cachedModelId === model)
+        return cachedSession;
+    const modelBuffer = await getModel(model);
+    const executionProviders = [];
+    if (acceleration === "coreml")
+        executionProviders.push("coreml");
+    executionProviders.push("cpu");
+    const session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
+        executionProviders,
+    });
+    cachedSession = session;
+    cachedModelId = model;
+    return session;
+}
+function buildUnits(text) {
+    const segments = segmentText(sanitizeText(text));
+    const units = [];
+    for (const segment of segments) {
+        if (isSilenceMarker(segment)) {
+            units.push({
+                type: "silence",
+                silenceLength: Math.floor(extractSilenceDuration(segment) * SAMPLE_RATE),
+            });
+        }
+        else {
+            units.push({ type: "text", segment });
+        }
+    }
+    return units;
+}
+// ---- Quick-speak generation flow control (backpressure) ----
+// The renderer caps how far ahead we generate ("genTarget" = highest chunk
+// index that may START) so a paused/idle ebook doesn't generate the whole book.
+// Renderer is the single source of truth: it advances genTarget as playback
+// moves (currentChunk + ~20), re-caps it to stop, or sets it to Infinity on
+// Download (full export). Backpressure is OPT-IN: callers that don't pass
+// initialTarget (e.g. the Chrome-extension HTTP API) generate fully, unchanged.
+let activeGenerateId = null;
+let genTarget = Number.MAX_SAFE_INTEGER;
+let genWake = null;
+function wakeGen() {
+    const w = genWake;
+    genWake = null;
+    if (w)
+        w();
+}
 async function generateVoice(params) {
     if (params.speed < 0.1 || params.speed > 5) {
         throw new Error("Speed must be between 0.1 and 5");
     }
     const tokensPerChunk = MODEL_CONTEXT_WINDOW - 2;
-    const chunks = await preprocessText(params.text, params.lang, tokensPerChunk);
+    // Split into units up front (cheap regex only); phonemize lazily while streaming.
+    const units = buildUnits(params.text);
     // Get or create ONNX session
     let session;
     if (cachedSession && cachedModelId === params.model) {
@@ -469,26 +531,12 @@ async function generateVoice(params) {
     const voices = parseVoiceFormula(params.voiceFormula);
     const combinedVoice = await combineVoices(voices);
     const lookAhead = LOOK_AHEAD_SIZES[params.acceleration] || 3;
-    const preparedChunks = [];
-    for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        if (chunk.type === "silence") {
-            const silenceLength = Math.floor(chunk.durationSeconds * SAMPLE_RATE);
-            preparedChunks.push({ originalIndex: i, type: "silence", silenceLength });
-        }
-        else if (chunk.type === "text") {
-            const tokensLength = chunk.tokens?.length ?? 0;
-            if (tokensLength < 1) {
-                continue;
-            }
-            preparedChunks.push({ originalIndex: i, type: "text", tokens: chunk.tokens });
-        }
-    }
-    const totalChunks = preparedChunks.length;
+    const totalChunks = units.length;
     if (totalChunks === 0) {
         throw new Error("No chunks to process");
     }
-    // Results array and tracking
+    // Results array and tracking. Each entry is freed (set null) once emitted so
+    // we never hold the whole-document audio in memory.
     const results = new Array(totalChunks);
     const completed = new Array(totalChunks).fill(false);
     let nextToYield = 0;
@@ -496,26 +544,50 @@ async function generateVoice(params) {
     let completedCount = 0;
     // In-flight promises
     const inFlight = new Map();
-    // Process a single chunk
+    // Process one unit. Silence -> a zero buffer. Text -> phonemize NOW (this is the
+    // work moved off the startup path), then run inference for each sub-chunk of a
+    // long segment and concatenate them into a single waveform for this unit.
     const processChunk = async (chunkIdx) => {
-        const prepared = preparedChunks[chunkIdx];
-        if (prepared.type === "silence") {
-            return { index: chunkIdx, waveform: new Float32Array(prepared.silenceLength) };
+        const unit = units[chunkIdx];
+        if (unit.type === "silence") {
+            return { index: chunkIdx, waveform: new Float32Array(unit.silenceLength) };
         }
-        const tokens = prepared.tokens;
-        const ref_s = combinedVoice[tokens.length - 1][0];
-        const paddedTokens = [0, ...tokens, 0];
-        const input_ids = new ort.Tensor("int64", BigInt64Array.from(paddedTokens.map(BigInt)), [
-            1,
-            paddedTokens.length,
-        ]);
-        const style = new ort.Tensor("float32", new Float32Array(ref_s), [1, ref_s.length]);
-        const speed = new ort.Tensor("float32", [1], [1]);
-        const result = await session.run({ input_ids, style, speed });
-        let waveform = result.waveform.data;
-        waveform = trimWaveform(waveform);
+        const phonemized = await phonemize(unit.segment, params.lang);
+        const parts = [];
+        for (const phonemeChunk of createPhonemeSubChunks(phonemized, tokensPerChunk)) {
+            const tokens = tokenize(phonemeChunk);
+            if (tokens.length < 1)
+                continue;
+            const ref_s = combinedVoice[tokens.length - 1][0];
+            const paddedTokens = [0, ...tokens, 0];
+            const input_ids = new ort.Tensor("int64", BigInt64Array.from(paddedTokens.map(BigInt)), [
+                1,
+                paddedTokens.length,
+            ]);
+            const style = new ort.Tensor("float32", new Float32Array(ref_s), [1, ref_s.length]);
+            const speed = new ort.Tensor("float32", [1], [1]);
+            const result = await session.run({ input_ids, style, speed });
+            parts.push(trimWaveform(result.waveform.data));
+        }
+        if (parts.length === 0)
+            return { index: chunkIdx, waveform: new Float32Array(0) };
+        if (parts.length === 1)
+            return { index: chunkIdx, waveform: parts[0] };
+        const len = parts.reduce((sum, p) => sum + p.length, 0);
+        const waveform = new Float32Array(len);
+        let off = 0;
+        for (const p of parts) {
+            waveform.set(p, off);
+            off += p.length;
+        }
         return { index: chunkIdx, waveform };
     };
+    // Capture THIS run's id + abort check once. Everything below uses reqId, not
+    // the mutable module-global currentRequestId, so a superseded/overlapping run
+    // can't mis-tag this run's chunks (or vice-versa) when a new generate arrives
+    // while this run's in-flight ONNX inference is still settling.
+    const reqId = currentRequestId;
+    const isAborted = () => isShuttingDown || (reqId !== null && abortedRequests.has(reqId));
     // Yield consecutive completed chunks in order
     const yieldReadyChunks = () => {
         while (nextToYield < totalChunks && completed[nextToYield]) {
@@ -524,7 +596,7 @@ async function generateVoice(params) {
             const wavBuffer = createWavBuffer(waveform, SAMPLE_RATE);
             const base64 = Buffer.from(wavBuffer).toString("base64");
             parentPort?.postMessage({
-                requestId: currentRequestId,
+                requestId: reqId,
                 type: "chunk",
                 data: {
                     chunkIndex: nextToYield,
@@ -533,24 +605,32 @@ async function generateVoice(params) {
                     mimeType: "audio/wav",
                 },
             });
+            results[nextToYield] = null; // free after emit — bounds memory on large docs
             nextToYield++;
         }
     };
-    // Fill look-ahead window
+    // Fill look-ahead window — but never START a chunk beyond genTarget (the
+    // renderer's buffer-ahead cap), so we don't generate the whole document.
     const fillLookAhead = () => {
-        while (inFlight.size < lookAhead && nextToStart < totalChunks) {
+        if (isAborted())
+            return;
+        while (inFlight.size < lookAhead && nextToStart < totalChunks && nextToStart <= genTarget) {
             const chunkIdx = nextToStart;
             nextToStart++;
             const promise = processChunk(chunkIdx);
             inFlight.set(chunkIdx, promise);
             promise.then((result) => {
+                inFlight.delete(result.index);
+                // If this run was superseded/aborted, stop emitting (its in-flight tail
+                // must not post progress/chunks tagged onto whatever runs next).
+                if (isAborted())
+                    return;
                 results[result.index] = result.waveform;
                 completed[result.index] = true;
                 completedCount++;
-                inFlight.delete(result.index);
                 // Report progress
                 parentPort?.postMessage({
-                    requestId: currentRequestId,
+                    requestId: reqId,
                     type: "progress",
                     data: {
                         stage: "inference",
@@ -566,16 +646,22 @@ async function generateVoice(params) {
             });
         }
     };
-    // Start processing
-    fillLookAhead();
-    // Wait for all to complete
+    // Drive the pipeline. When we've caught up to genTarget but the document isn't
+    // finished, PARK on genWake (no busy-loop) until the renderer advances the
+    // target (setTarget) or we're aborted/shut down — instead of ending early.
     while (completedCount < totalChunks) {
-        // Check for shutdown
-        if (isShuttingDown) {
-            throw new Error("Aborted due to shutdown");
+        if (isAborted()) {
+            throw new Error("Generation aborted");
         }
+        fillLookAhead();
         if (inFlight.size > 0) {
             await Promise.race(inFlight.values());
+        }
+        else if (nextToStart < totalChunks) {
+            // Caught up to the buffer target — wait for it to advance (or for abort).
+            await new Promise((resolve) => {
+                genWake = resolve;
+            });
         }
         else {
             break;
@@ -583,22 +669,127 @@ async function generateVoice(params) {
     }
     // Final yield
     yieldReadyChunks();
-    // Concatenate all waveforms for the final result
-    const waveformsLen = results.reduce((sum, w) => sum + w.length, 0);
-    const finalWaveform = new Float32Array(waveformsLen);
-    let offset = 0;
-    for (const waveform of results) {
-        finalWaveform.set(waveform, offset);
-        offset += waveform.length;
+    // Every chunk was streamed (and freed) above. We deliberately do NOT
+    // accumulate/concatenate the whole-document waveform — for a book it would be
+    // gigabytes, and no consumer uses this return value (all of them read the
+    // per-chunk stream). Return a tiny empty buffer so the caller's promise
+    // resolves and "tts:complete" fires.
+    return { buffer: createWavBuffer(new Float32Array(0), SAMPLE_RATE), mimeType: "audio/wav" };
+}
+async function generateUnitsToStream(params, emit, isAborted) {
+    const tokensPerChunk = MODEL_CONTEXT_WINDOW - 2;
+    const session = await ensureSession(params.model, params.acceleration);
+    const combinedVoice = await combineVoices(parseVoiceFormula(params.voiceFormula));
+    const lookAhead = LOOK_AHEAD_SIZES[params.acceleration] || 3;
+    // Flatten all units into one ordered chunk list, tagged with unitId. A unit
+    // that produces no audible chunks still gets a unitDone so the highlight can
+    // advance past it.
+    const prepared = [];
+    for (const unit of params.units) {
+        if (isAborted())
+            return;
+        const chunks = await preprocessText(unit.text, params.lang, tokensPerChunk);
+        const unitChunks = [];
+        for (const chunk of chunks) {
+            if (chunk.type === "silence") {
+                unitChunks.push({
+                    type: "silence",
+                    silenceLength: Math.floor(chunk.durationSeconds * SAMPLE_RATE),
+                    unitId: unit.id,
+                    isUnitEnd: false,
+                });
+            }
+            else if (chunk.type === "text" && (chunk.tokens?.length ?? 0) >= 1) {
+                unitChunks.push({ type: "text", tokens: chunk.tokens, unitId: unit.id, isUnitEnd: false });
+            }
+        }
+        if (unitChunks.length === 0) {
+            emit({ requestId: params.requestId, type: "unitDone", data: { unitId: unit.id } });
+            continue;
+        }
+        unitChunks[unitChunks.length - 1].isUnitEnd = true;
+        prepared.push(...unitChunks);
     }
-    let wavBuffer = createWavBuffer(finalWaveform, SAMPLE_RATE);
-    if (params.speed !== 1) {
-        wavBuffer = await modifyWavSpeed(wavBuffer, params.speed);
+    const total = prepared.length;
+    if (total === 0) {
+        emit({ requestId: params.requestId, type: "genComplete" });
+        return;
     }
-    if (params.format === "wav") {
-        return { buffer: wavBuffer, mimeType: "audio/wav" };
+    const results = new Array(total).fill(null);
+    const completed = new Array(total).fill(false);
+    let nextToYield = 0;
+    let nextToStart = 0;
+    let completedCount = 0;
+    const inFlight = new Map();
+    const processChunk = async (idx) => {
+        const pc = prepared[idx];
+        if (pc.type === "silence") {
+            return { index: idx, waveform: new Float32Array(pc.silenceLength) };
+        }
+        const tokens = pc.tokens;
+        const ref_s = combinedVoice[tokens.length - 1][0];
+        const paddedTokens = [0, ...tokens, 0];
+        const input_ids = new ort.Tensor("int64", BigInt64Array.from(paddedTokens.map(BigInt)), [
+            1,
+            paddedTokens.length,
+        ]);
+        const style = new ort.Tensor("float32", new Float32Array(ref_s), [1, ref_s.length]);
+        const speed = new ort.Tensor("float32", [1], [1]);
+        const result = await session.run({ input_ids, style, speed });
+        let waveform = result.waveform.data;
+        waveform = trimWaveform(waveform);
+        return { index: idx, waveform };
+    };
+    const yieldReady = () => {
+        while (nextToYield < total && completed[nextToYield]) {
+            const pc = prepared[nextToYield];
+            const waveform = results[nextToYield];
+            const wavBuffer = createWavBuffer(waveform, SAMPLE_RATE);
+            const base64 = Buffer.from(wavBuffer).toString("base64");
+            emit({
+                requestId: params.requestId,
+                type: "unitChunk",
+                data: { unitId: pc.unitId, base64, mimeType: "audio/wav" },
+            });
+            if (pc.isUnitEnd) {
+                emit({ requestId: params.requestId, type: "unitDone", data: { unitId: pc.unitId } });
+            }
+            results[nextToYield] = null; // free the waveform once emitted
+            nextToYield++;
+        }
+    };
+    const fill = () => {
+        while (inFlight.size < lookAhead && nextToStart < total) {
+            if (isAborted())
+                return;
+            const idx = nextToStart++;
+            const promise = processChunk(idx);
+            inFlight.set(idx, promise);
+            promise.then((r) => {
+                results[r.index] = r.waveform;
+                completed[r.index] = true;
+                completedCount++;
+                inFlight.delete(r.index);
+                yieldReady();
+                if (!isAborted())
+                    fill();
+            });
+        }
+    };
+    fill();
+    while (completedCount < total) {
+        if (isAborted())
+            return;
+        if (inFlight.size > 0) {
+            await Promise.race(inFlight.values());
+        }
+        else {
+            break;
+        }
     }
-    return { buffer: await wavToMp3(wavBuffer), mimeType: "audio/mpeg" };
+    yieldReady();
+    if (!isAborted())
+        emit({ requestId: params.requestId, type: "genComplete" });
 }
 // Cleanup function for graceful shutdown
 async function cleanup() {
@@ -639,6 +830,51 @@ parentPort?.on("message", async (message) => {
         }
         return;
     }
+    if (type === "cancel") {
+        if (requestId)
+            abortedRequests.add(requestId);
+        wakeGen(); // unblock a parked generation so it sees the abort and stops
+        return;
+    }
+    if (type === "setTarget") {
+        // Renderer-driven buffer-ahead cap for the active quick-speak generation.
+        // The renderer is the source of truth (it sends currentChunk+AHEAD as
+        // playback advances, or Number.MAX_SAFE_INTEGER to force full generation on
+        // Download), so we SET (not max) the target — letting a cancelled export
+        // re-cap back to the normal window. Ignore messages for a superseded request.
+        if (requestId && requestId === activeGenerateId && typeof data?.targetChunk === "number") {
+            genTarget = data.targetChunk;
+            wakeGen();
+        }
+        return;
+    }
+    if (type === "generateUnits") {
+        if (isShuttingDown) {
+            parentPort?.postMessage({ requestId, type: "error", error: "Worker is shutting down" });
+            return;
+        }
+        try {
+            await generateUnitsToStream({ requestId, ...data }, (msg) => parentPort?.postMessage(msg), () => isShuttingDown || abortedRequests.has(requestId));
+        }
+        catch (error) {
+            console.error("[TTS Worker] generateUnits failed:", error);
+            if (!isShuttingDown && !abortedRequests.has(requestId)) {
+                const e = error;
+                parentPort?.postMessage({
+                    requestId,
+                    type: "error",
+                    error: e?.message || String(error),
+                    stack: e?.stack || "",
+                    platform: process.platform,
+                    arch: process.arch,
+                });
+            }
+        }
+        finally {
+            abortedRequests.delete(requestId);
+        }
+        return;
+    }
     if (type === "generate") {
         if (isShuttingDown) {
             parentPort?.postMessage({
@@ -648,8 +884,14 @@ parentPort?.on("message", async (message) => {
             });
             return;
         }
-        // Store requestId for progress messages
+        // Store requestId for progress messages + flow-control. Backpressure is
+        // opt-in: if the caller (HTTP extension) didn't pass initialTarget, generate
+        // fully (genTarget = Infinity), preserving the old behavior exactly.
         currentRequestId = requestId;
+        activeGenerateId = requestId;
+        genTarget =
+            typeof data?.initialTarget === "number" ? data.initialTarget : Number.MAX_SAFE_INTEGER;
+        genWake = null;
         try {
             const result = await generateVoice(data);
             // Check if we were interrupted
@@ -673,7 +915,18 @@ parentPort?.on("message", async (message) => {
             // main-process console — crucial for diagnosing platform-specific bugs
             // that only repro in packaged builds.
             console.error("[TTS Worker] generate failed:", error);
-            if (!isShuttingDown) {
+            if (abortedRequests.has(requestId)) {
+                // Intentional cancel (stop / unmount / quit). Resolve the caller quietly
+                // so its pending promise doesn't leak; flag it cancelled so main does NOT
+                // fire the global tts:complete (which would otherwise hit whatever stream
+                // started next and corrupt its flow control).
+                parentPort?.postMessage({
+                    requestId,
+                    type: "result",
+                    data: { base64: "", mimeType: "audio/wav", cancelled: true },
+                });
+            }
+            else if (!isShuttingDown) {
                 const message = error?.message || String(error);
                 const stack = error?.stack || "";
                 parentPort?.postMessage({
@@ -687,7 +940,16 @@ parentPort?.on("message", async (message) => {
             }
         }
         finally {
-            currentRequestId = null;
+            // Only clear the shared flow-control globals if THIS run still owns them.
+            // A superseded run's in-flight inference can settle AFTER the next run has
+            // re-initialized these — without this guard it would null out the live
+            // run's id/target/wake, ignoring its setTarget and deadlocking it.
+            if (activeGenerateId === requestId) {
+                currentRequestId = null;
+                activeGenerateId = null;
+                genWake = null;
+            }
+            abortedRequests.delete(requestId);
         }
     }
 });

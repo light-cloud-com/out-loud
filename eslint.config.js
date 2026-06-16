@@ -23,6 +23,7 @@ export default [
       "chrome-extension/lib/**",
       "chrome-extension/dist/**",
       "safari-extension/**",
+      "electron-ui/src/reader/vendor/**",
       "**/package-lock.json",
     ],
   },

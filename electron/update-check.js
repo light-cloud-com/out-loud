@@ -1,10 +1,12 @@
 import { app } from "electron";
 import { getPrefs, setPrefs } from "./store.js";
+import { track } from "./telemetry.js";
 const RELEASES_API = "https://api.github.com/repos/light-cloud-com/out-loud/releases/latest";
 const RELEASES_URL = "https://github.com/light-cloud-com/out-loud/releases/latest";
 const POLL_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const FETCH_TIMEOUT_MS = 8000;
 let cachedUpdate = null;
+let lastAnnounced = null;
 let pollTimer = null;
 let windowGetter = () => null;
 // ---- pure helpers -----------------------------------------------------------
@@ -98,6 +100,14 @@ async function refresh() {
     if (!release)
         return;
     cachedUpdate = computeUpdate(release);
+    // Announce once per newly-detected version (the poll runs every 6h).
+    if (cachedUpdate && cachedUpdate.latest !== lastAnnounced) {
+        lastAnnounced = cachedUpdate.latest;
+        track("update_available", {
+            latest_version: cachedUpdate.latest,
+            current_version: app.getVersion(),
+        });
+    }
     broadcast();
 }
 export function startUpdateChecks(getWindow) {

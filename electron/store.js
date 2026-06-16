@@ -4,6 +4,7 @@ import * as fs from "fs";
 const DEFAULT_PREFS = {
     skippedVersion: null,
     lastCheckAt: 0,
+    installId: null,
 };
 let cache = null;
 function prefsPath() {
@@ -33,5 +34,15 @@ export function setPrefs(updates) {
         console.error("[Prefs] Failed to persist preferences:", err);
     }
     return next;
+}
+// Return the stable anonymous install id, generating and persisting one on
+// first call. A plain random v4 UUID — no machine/user/hardware linkage.
+export function getOrCreateInstallId() {
+    const existing = getPrefs().installId;
+    if (existing)
+        return existing;
+    const id = crypto.randomUUID();
+    setPrefs({ installId: id });
+    return id;
 }
 //# sourceMappingURL=store.js.map
