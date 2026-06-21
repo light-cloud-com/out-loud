@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "com.outloud.app",
+  "appId": "io.out-loud.outloud",
   "productName": "Out Loud",
   "directories": {
     "output": "releases/desktop",
@@ -15,11 +15,6 @@
     "package.json"
   ],
   "extraResources": [
-    {
-      "from": "node_modules/ffmpeg-static",
-      "to": "ffmpeg-static",
-      "filter": ["**/*"]
-    },
     {
       "from": "docs/app/openapi.yaml",
       "to": "openapi.yaml"
@@ -91,6 +86,8 @@
   },
   "mas": {
     "hardenedRuntime": false,
+    "identity": "Apple Distribution: Julia Kafarska (8Y2UTZ2NBZ)",
+    "provisioningProfile": "build-resources/embedded.provisionprofile",
     "entitlements": "build-resources/entitlements.mas.plist",
     "entitlementsInherit": "build-resources/entitlements.mas.inherit.plist",
     "category": "public.app-category.utilities"
