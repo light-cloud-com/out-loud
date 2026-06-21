@@ -32,3 +32,8 @@ Thumbs.db
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Apple signing artifacts (provided locally / via CI secret, never committed)
+*.provisionprofile
+*.p12
+*.cer
