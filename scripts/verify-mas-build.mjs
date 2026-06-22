@@ -13,16 +13,17 @@
 //   1. The .app is signed with "Apple Distribution" (not Developer ID).
 //   2. The app entitlements enable App Sandbox (com.apple.security.app-sandbox).
 //   3. A provisioning profile is embedded and its TeamID matches.
-//   4. Every nested Mach-O (Electron helpers, .node addons, AND ffmpeg) is
-//      signed with team 8Y2UTZ2NBZ and carries com.apple.security.inherit, so
-//      child processes stay inside the parent's sandbox at runtime.
+//   4. Every nested Mach-O is signed with team 8Y2UTZ2NBZ; spawned executables
+//      (Electron helpers, login helper, ffmpeg) additionally carry
+//      com.apple.security.inherit so child processes stay sandboxed. In-process
+//      code (dylibs, frameworks, .node bundles) only needs the signature.
 //   5. codesign --verify --deep --strict passes and the build is NOT hardened
 //      (hardened runtime + MAS don't mix).
 //
 // Exit code is non-zero if any check fails, so it can gate CI / a release step.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, lstatSync } from "node:fs";
 import { join, basename } from "node:path";
 
 const TEAM_ID = "8Y2UTZ2NBZ";
@@ -58,13 +59,16 @@ function findApp() {
   return null;
 }
 
-// Walk the bundle for Mach-O executables (helpers, dylibs, .node, ffmpeg).
+// Walk the bundle for Mach-O files (helpers, dylibs, .node, ffmpeg). Uses
+// lstat and skips symlinks so the framework's Versions/Current alias isn't
+// followed back into Versions/A — otherwise every nested binary is found 3x.
 function findMachO(root) {
   const out = [];
   const walk = (dir) => {
     for (const name of readdirSync(dir)) {
       const p = join(dir, name);
-      const st = statSync(p);
+      const st = lstatSync(p, { throwIfNoEntry: false });
+      if (!st || st.isSymbolicLink()) continue;
       if (st.isDirectory()) {
         walk(p);
       } else if (st.isFile()) {
@@ -124,25 +128,44 @@ if (existsSync(profile)) {
   fail("no embedded.provisionprofile in the bundle — signing did not embed it");
 }
 
-// 4. Nested executables (the ffmpeg sandbox-inherit smoke-test lives here).
-section("Nested executables (ffmpeg + helpers): signed + sandbox-inherit");
+// 4. Nested Mach-O signing. Everything must be signed with the team. The
+//    com.apple.security.inherit entitlement only applies to EXECUTABLES that
+//    spawn as their own process (helper apps, login helper, ffmpeg) so the
+//    child stays inside the parent's sandbox. Dylibs / frameworks / .node
+//    bundles load in-process — the sandbox is a process attribute, so they
+//    must NOT carry inherit; a valid team signature is all that's required.
+section("Nested Mach-O: team signature (+ inherit on spawned executables)");
 const binaries = findMachO(join(appPath, "Contents"));
+const mainExe = join(appPath, "Contents", "MacOS", basename(appPath, ".app"));
 let ffmpegSeen = false;
 for (const bin of binaries) {
   const label = basename(bin);
-  const sig = sh("codesign", ["-dvvv", bin]);
-  const teamOk = new RegExp(`TeamIdentifier=${TEAM_ID}`).test(sig);
-  const binEnts = sh("codesign", ["-d", "--entitlements", ":-", bin]);
-  const inheritOk = /com\.apple\.security\.inherit/.test(binEnts);
-  const isFfmpeg = /ffmpeg/i.test(label);
-  if (isFfmpeg) ffmpegSeen = true;
-  if (!teamOk) fail(`${label}: not signed with team ${TEAM_ID}`);
-  // The main app executable itself carries app-sandbox, not inherit — skip it.
-  else if (!inheritOk && bin !== join(appPath, "Contents", "MacOS", basename(appPath, ".app")))
-    fail(`${label}: missing com.apple.security.inherit (child won't stay sandboxed)`);
-  else pass(`${label}: team ${TEAM_ID}${inheritOk ? " + inherit" : ""}`);
+  const isExecutable = /Mach-O.*executable/.test(sh("file", ["-b", bin]));
+  const teamOk = new RegExp(`TeamIdentifier=${TEAM_ID}`).test(sh("codesign", ["-dvvv", bin]));
+  if (/ffmpeg/i.test(label) && isExecutable) ffmpegSeen = true;
+
+  if (!teamOk) {
+    fail(`${label}: not signed with team ${TEAM_ID}`);
+    continue;
+  }
+  // In-process code: signature is enough, inherit is N/A.
+  if (!isExecutable) {
+    pass(`${label}: signed (library/bundle)`);
+    continue;
+  }
+  const ent = sh("codesign", ["-d", "--entitlements", ":-", bin]);
+  // The main app executable carries app-sandbox; spawned executables carry inherit.
+  if (bin === mainExe) {
+    if (/com\.apple\.security\.app-sandbox/.test(ent))
+      pass(`${label}: app-sandbox (main executable)`);
+    else fail(`${label}: main executable missing com.apple.security.app-sandbox`);
+  } else if (/com\.apple\.security\.inherit/.test(ent)) {
+    pass(`${label}: team ${TEAM_ID} + inherit`);
+  } else {
+    fail(`${label}: spawned executable missing com.apple.security.inherit`);
+  }
 }
-if (!ffmpegSeen) fail("ffmpeg binary not found in bundle — audio export will break");
+if (!ffmpegSeen) fail("ffmpeg executable not found in bundle — audio export will break");
 
 // ---- result -----------------------------------------------------------------
 

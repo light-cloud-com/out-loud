@@ -86,7 +86,7 @@
   },
   "mas": {
     "hardenedRuntime": false,
-    "identity": "Apple Distribution: Julia Kafarska (8Y2UTZ2NBZ)",
+    "identity": "Julia Kafarska (8Y2UTZ2NBZ)",
     "provisioningProfile": "build-resources/embedded.provisionprofile",
     "entitlements": "build-resources/entitlements.mas.plist",
     "entitlementsInherit": "build-resources/entitlements.mas.inherit.plist",
