@@ -49,7 +49,68 @@ const SAMPLE_RATE = 24000;
 const LOOK_AHEAD_SIZES: Record<string, number> = {
   cpu: 4,
   coreml: 3,
+  auto: 3,
 };
+
+type Acceleration = "auto" | "cpu" | "coreml";
+
+// GPU execution providers we know how to use, in preference order. We only
+// actually try the ones the installed onnxruntime-node binary was built with
+// (discovered at runtime below), so this list can stay aspirational — a new EP
+// lights up automatically wherever the binary supports it.
+const GPU_EP_PRIORITY = ["coreml", "dml", "cuda", "webgpu"];
+
+// Which GPU EPs are actually bundled in this binary. onnxruntime-node ships CPU
+// everywhere and CoreML on macOS; Windows/Linux GPU builds add dml/cuda. Empty
+// on a CPU-only binary, so we silently stay on CPU there.
+function availableGpuProviders(): string[] {
+  try {
+    const backends =
+      (
+        ort as unknown as { listSupportedBackends?: () => { name: string }[] }
+      ).listSupportedBackends?.() ?? [];
+    const names = new Set(backends.map((b) => b.name));
+    return GPU_EP_PRIORITY.filter((ep) => names.has(ep));
+  } catch {
+    return [];
+  }
+}
+
+// Resolve an acceleration mode to an ordered execution-provider list. CPU is
+// ALWAYS appended last so unsupported ops fall back instead of failing.
+function providersFor(acceleration: Acceleration): string[] {
+  if (acceleration === "cpu") return ["cpu"];
+  const gpu = availableGpuProviders();
+  if (acceleration === "coreml") return gpu.includes("coreml") ? ["coreml", "cpu"] : ["cpu"];
+  return [...gpu, "cpu"]; // "auto": every bundled GPU EP, then CPU
+}
+
+// Create a session, hard-falling-back to CPU-only if the GPU EP can't
+// initialise (missing framework, model it can't compile, etc.). The EP list
+// already lets ORT partition unsupported ops to CPU; this catch handles the
+// harder case where the whole GPU EP fails to start.
+async function createSessionWithFallback(
+  modelBuffer: ArrayBuffer | Uint8Array,
+  providers: string[]
+): Promise<ort.InferenceSession> {
+  try {
+    const session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
+      executionProviders: providers as ort.InferenceSession.ExecutionProviderConfig[],
+    });
+    console.log(`[TTS Worker] ONNX session providers: ${providers.join(", ")}`);
+    return session;
+  } catch (err) {
+    if (providers.length === 1) throw err; // already CPU-only — nothing to fall back to
+    console.warn(
+      `[TTS Worker] EP [${providers.join(", ")}] failed (${
+        err instanceof Error ? err.message : String(err)
+      }); falling back to CPU`
+    );
+    return ort.InferenceSession.create(Buffer.from(modelBuffer), {
+      executionProviders: ["cpu"] as ort.InferenceSession.ExecutionProviderConfig[],
+    });
+  }
+}
 
 // Models directory - embedded in the app, asarUnpack'd by electron-builder.
 const MODELS_DIR =
@@ -541,18 +602,12 @@ function trimWaveform(waveform: Float32Array): Float32Array {
 // generateVoice) when the model matches.
 async function ensureSession(
   model: string,
-  acceleration: "cpu" | "coreml"
+  acceleration: Acceleration
 ): Promise<ort.InferenceSession> {
   if (cachedSession && cachedModelId === model) return cachedSession;
 
   const modelBuffer = await getModel(model);
-  const executionProviders: ort.InferenceSession.ExecutionProviderConfig[] = [];
-  if (acceleration === "coreml") executionProviders.push("coreml");
-  executionProviders.push("cpu");
-
-  const session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
-    executionProviders,
-  });
+  const session = await createSessionWithFallback(modelBuffer, providersFor(acceleration));
   cachedSession = session;
   cachedModelId = model;
   return session;
@@ -612,7 +667,7 @@ async function generateVoice(params: {
   model: string;
   speed: number;
   format: "wav" | "mp3";
-  acceleration: "cpu" | "coreml";
+  acceleration: Acceleration;
   initialTarget?: number;
 }): Promise<{ buffer: ArrayBuffer; mimeType: string }> {
   if (params.speed < 0.1 || params.speed > 5) {
@@ -623,28 +678,8 @@ async function generateVoice(params: {
   // Split into units up front (cheap regex only); phonemize lazily while streaming.
   const units = buildUnits(params.text);
 
-  // Get or create ONNX session
-  let session: ort.InferenceSession;
-  if (cachedSession && cachedModelId === params.model) {
-    session = cachedSession;
-  } else {
-    const modelBuffer = await getModel(params.model);
-
-    // Configure execution providers for GPU acceleration
-    const executionProviders: ort.InferenceSession.ExecutionProviderConfig[] = [];
-
-    if (params.acceleration === "coreml") {
-      executionProviders.push("coreml");
-    }
-    executionProviders.push("cpu");
-
-    session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
-      executionProviders,
-    });
-
-    cachedSession = session;
-    cachedModelId = params.model;
-  }
+  // Get or create ONNX session (shared cache; GPU EP with CPU fallback).
+  const session = await ensureSession(params.model, params.acceleration);
 
   const voices = parseVoiceFormula(params.voiceFormula);
   const combinedVoice = await combineVoices(voices);
@@ -832,7 +867,7 @@ async function generateUnitsToStream(
     lang: string;
     voiceFormula: string;
     model: string;
-    acceleration: "cpu" | "coreml";
+    acceleration: Acceleration;
   },
   emit: (msg: unknown) => void,
   isAborted: () => boolean
