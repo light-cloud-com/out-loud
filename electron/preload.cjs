@@ -74,6 +74,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return await ipcRenderer.invoke("settings:update", updates);
   },
 
+  // Optional user identity (name + email) for analytics. Both calls resolve to
+  // the normalised { name, email } the main process stored.
+  getIdentity: async () => {
+    return await ipcRenderer.invoke("identity:get");
+  },
+  setIdentity: async (identity) => {
+    return await ipcRenderer.invoke("identity:set", identity);
+  },
+
   // Listen for settings updates from other sources (e.g., extension)
   onSettingsUpdated: (callback) => {
     const handler = (_event, settings) => callback(settings);

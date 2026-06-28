@@ -1,7 +1,7 @@
 import { app } from "electron";
 import * as path from "path";
 import * as fs from "fs";
-import { getOrCreateInstallId } from "./store.js";
+import { getOrCreateInstallId, getPrefs, setPrefs } from "./store.js";
 import { POSTHOG_KEY, POSTHOG_HOST, isTelemetryConfigured } from "./telemetry-config.js";
 
 // ============ Usage telemetry (PostHog) ======================================
@@ -20,6 +20,12 @@ import { POSTHOG_KEY, POSTHOG_HOST, isTelemetryConfigured } from "./telemetry-co
 //   allowed: enum voice ids, language codes, bucketed lengths/counts,
 //   durations, booleans, formats, platform/arch/version. Property cleaning
 //   below is a backstop; callers are expected to pass shape only.
+//
+// The ONE exception is identity the user types in themselves: an optional name
+// and email entered via the "stay in touch" field in About. When (and only
+// when) the user fills those in, they are attached as PostHog person
+// properties (name/email) so we can recognise the install. Empty by default;
+// the user can clear them at any time.
 //
 // Offline-first is preserved: a network failure is swallowed (mirrors
 // update-check.ts), the queue spills to disk and retries later, and nothing
@@ -50,6 +56,9 @@ let ctx: {
   locale: string;
   sessionId: string;
   isDev: boolean;
+  // Optional, user-supplied. null until the user fills in the identity field.
+  userName: string | null;
+  userEmail: string | null;
 } | null = null;
 
 let sessionStart = 0;
@@ -144,6 +153,7 @@ export function initTelemetry(isDev: boolean): void {
     return;
   }
 
+  const prefs = getPrefs();
   ctx = {
     installId: getOrCreateInstallId(),
     version: app.getVersion(),
@@ -152,6 +162,8 @@ export function initTelemetry(isDev: boolean): void {
     locale: app.getLocale() || "unknown",
     sessionId: crypto.randomUUID(),
     isDev,
+    userName: prefs.userName,
+    userEmail: prefs.userEmail,
   };
   sessionStart = Date.now();
 
@@ -214,8 +226,17 @@ function enqueue(event: string, props: Record<string, unknown>): void {
       $app_version: ctx.version,
       $lib: "out-loud-desktop",
       $lib_version: ctx.version,
-      // Person-level properties on the anonymous install.
-      $set: { app_version: ctx.version, os: ctx.os, arch: ctx.arch, locale: ctx.locale },
+      // Person-level properties on the install. name/email are present only
+      // when the user opted in by typing them; PostHog treats them as the
+      // built-in person name/email so the person becomes identifiable.
+      $set: {
+        app_version: ctx.version,
+        os: ctx.os,
+        arch: ctx.arch,
+        locale: ctx.locale,
+        ...(ctx.userName ? { name: ctx.userName } : {}),
+        ...(ctx.userEmail ? { email: ctx.userEmail } : {}),
+      },
     },
   };
 
@@ -247,6 +268,68 @@ export function trackFromRenderer(event: unknown, props: unknown): void {
       ? (props as Record<string, unknown>)
       : {};
   track(event, safeProps);
+}
+
+// ---- user identity (optional, opt-in) ---------------------------------------
+
+export interface UserIdentity {
+  name: string | null;
+  email: string | null;
+}
+
+function normalizeName(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const t = raw.trim();
+  return t.length === 0 ? null : t.slice(0, 100);
+}
+
+function normalizeEmail(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const t = raw.trim().toLowerCase();
+  // Lightweight sanity guard — not full RFC validation, just rejects garbage.
+  if (t.length === 0 || t.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) return null;
+  return t;
+}
+
+export function getUserIdentity(): UserIdentity {
+  const prefs = getPrefs();
+  return { name: prefs.userName, email: prefs.userEmail };
+}
+
+// Persist the user's optional name/email and reflect them in the PostHog person
+// record immediately. Returns the normalised, stored identity; empty/invalid
+// input clears the corresponding property (both on disk and in PostHog).
+export function setUserIdentity(input: { name?: unknown; email?: unknown }): UserIdentity {
+  const name = normalizeName(input?.name);
+  const email = normalizeEmail(input?.email);
+  setPrefs({ userName: name, userEmail: email });
+  if (ctx) {
+    ctx.userName = name;
+    ctx.userEmail = email;
+  }
+  // Push an identify event so the person updates right away: $set writes the
+  // values the user provided, $unset removes the ones they cleared.
+  if (mode === "live" && ctx) {
+    const unset: string[] = [];
+    if (!name) unset.push("name");
+    if (!email) unset.push("email");
+    queue.push({
+      event: "user_identified",
+      distinct_id: ctx.installId,
+      timestamp: new Date().toISOString(),
+      properties: {
+        distinct_id: ctx.installId,
+        session_id: ctx.sessionId,
+        app_version: ctx.version,
+        is_dev: ctx.isDev,
+        $set: { ...(name ? { name } : {}), ...(email ? { email } : {}) },
+        ...(unset.length ? { $unset: unset } : {}),
+      },
+    });
+    if (queue.length > MAX_QUEUE) queue = queue.slice(-MAX_QUEUE);
+    void flush();
+  }
+  return { name, email };
 }
 
 // ---- session ----------------------------------------------------------------

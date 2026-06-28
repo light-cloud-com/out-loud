@@ -16,12 +16,19 @@ export interface AppPrefs {
   // the machine, user, hardware, OS account, or any document — it is an opaque
   // random UUID and carries no PII. Generated lazily on first use.
   installId: string | null;
+  // OPTIONAL, user-supplied identity. Empty unless the user explicitly fills in
+  // the "stay in touch" fields in About. When present, these are attached as
+  // PostHog person properties so the install can be recognised. null = not set.
+  userName: string | null;
+  userEmail: string | null;
 }
 
 const DEFAULT_PREFS: AppPrefs = {
   skippedVersion: null,
   lastCheckAt: 0,
   installId: null,
+  userName: null,
+  userEmail: null,
 };
 
 let cache: AppPrefs | null = null;
