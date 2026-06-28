@@ -6,10 +6,10 @@
     <key>com.apple.security.app-sandbox</key>
     <true/>
 
-    <!-- Network access for local HTTP API server -->
+    <!-- Outgoing connections only (telemetry, update checks). The local
+         extension HTTP server (which would need network.server) is disabled in
+         the Mac App Store build per guideline 2.4.5(i). -->
     <key>com.apple.security.network.client</key>
-    <true/>
-    <key>com.apple.security.network.server</key>
     <true/>
 
     <!-- File access for saving audio exports -->

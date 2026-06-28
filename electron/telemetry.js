@@ -1,7 +1,7 @@
 import { app } from "electron";
 import * as path from "path";
 import * as fs from "fs";
-import { getOrCreateInstallId } from "./store.js";
+import { getOrCreateInstallId, getPrefs, setPrefs } from "./store.js";
 import { POSTHOG_KEY, POSTHOG_HOST, isTelemetryConfigured } from "./telemetry-config.js";
 const FLUSH_INTERVAL_MS = 30_000;
 const FLUSH_TIMEOUT_MS = 8_000;
@@ -107,6 +107,7 @@ export function initTelemetry(isDev) {
         mode = "off";
         return;
     }
+    const prefs = getPrefs();
     ctx = {
         installId: getOrCreateInstallId(),
         version: app.getVersion(),
@@ -115,6 +116,8 @@ export function initTelemetry(isDev) {
         locale: app.getLocale() || "unknown",
         sessionId: crypto.randomUUID(),
         isDev,
+        userName: prefs.userName,
+        userEmail: prefs.userEmail,
     };
     sessionStart = Date.now();
     // Always send when configured (including dev builds). Dev sessions are still
@@ -175,8 +178,17 @@ function enqueue(event, props) {
             $app_version: ctx.version,
             $lib: "out-loud-desktop",
             $lib_version: ctx.version,
-            // Person-level properties on the anonymous install.
-            $set: { app_version: ctx.version, os: ctx.os, arch: ctx.arch, locale: ctx.locale },
+            // Person-level properties on the install. name/email are present only
+            // when the user opted in by typing them; PostHog treats them as the
+            // built-in person name/email so the person becomes identifiable.
+            $set: {
+                app_version: ctx.version,
+                os: ctx.os,
+                arch: ctx.arch,
+                locale: ctx.locale,
+                ...(ctx.userName ? { name: ctx.userName } : {}),
+                ...(ctx.userEmail ? { email: ctx.userEmail } : {}),
+            },
         },
     };
     queue.push(payload);
@@ -210,6 +222,63 @@ export function trackFromRenderer(event, props) {
         ? props
         : {};
     track(event, safeProps);
+}
+function normalizeName(raw) {
+    if (typeof raw !== "string")
+        return null;
+    const t = raw.trim();
+    return t.length === 0 ? null : t.slice(0, 100);
+}
+function normalizeEmail(raw) {
+    if (typeof raw !== "string")
+        return null;
+    const t = raw.trim().toLowerCase();
+    // Lightweight sanity guard — not full RFC validation, just rejects garbage.
+    if (t.length === 0 || t.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t))
+        return null;
+    return t;
+}
+export function getUserIdentity() {
+    const prefs = getPrefs();
+    return { name: prefs.userName, email: prefs.userEmail };
+}
+// Persist the user's optional name/email and reflect them in the PostHog person
+// record immediately. Returns the normalised, stored identity; empty/invalid
+// input clears the corresponding property (both on disk and in PostHog).
+export function setUserIdentity(input) {
+    const name = normalizeName(input?.name);
+    const email = normalizeEmail(input?.email);
+    setPrefs({ userName: name, userEmail: email });
+    if (ctx) {
+        ctx.userName = name;
+        ctx.userEmail = email;
+    }
+    // Push an identify event so the person updates right away: $set writes the
+    // values the user provided, $unset removes the ones they cleared.
+    if (mode === "live" && ctx) {
+        const unset = [];
+        if (!name)
+            unset.push("name");
+        if (!email)
+            unset.push("email");
+        queue.push({
+            event: "user_identified",
+            distinct_id: ctx.installId,
+            timestamp: new Date().toISOString(),
+            properties: {
+                distinct_id: ctx.installId,
+                session_id: ctx.sessionId,
+                app_version: ctx.version,
+                is_dev: ctx.isDev,
+                $set: { ...(name ? { name } : {}), ...(email ? { email } : {}) },
+                ...(unset.length ? { $unset: unset } : {}),
+            },
+        });
+        if (queue.length > MAX_QUEUE)
+            queue = queue.slice(-MAX_QUEUE);
+        void flush();
+    }
+    return { name, email };
 }
 // ---- session ----------------------------------------------------------------
 export function trackSessionStart() {

@@ -7,7 +7,7 @@ import { fileURLToPath } from "url";
 import WordExtractor from "word-extractor";
 import { startUpdateChecks, stopUpdateChecks, getUpdate, skipVersion } from "./update-check.js";
 import { getRecents, putRecent, removeRecent } from "./reader-recents.js";
-import { initTelemetry, track, trackFromRenderer, trackSessionStart, shutdownTelemetry, lengthBucket, } from "./telemetry.js";
+import { initTelemetry, track, trackFromRenderer, trackSessionStart, shutdownTelemetry, lengthBucket, getUserIdentity, setUserIdentity, } from "./telemetry.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // Load app icon from PNG file
@@ -154,6 +154,47 @@ function createWindow() {
             mainWindow?.hide();
         }
     });
+}
+// Show (or recreate) and focus the main window. Used by the tray, the
+// application menu, and dock/activate so a hidden or closed window can always
+// be brought back.
+function showMainWindow() {
+    if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+    }
+    else {
+        createWindow();
+    }
+}
+// Build the application menu. Critically, this gives the user a menu item to
+// re-open the main window after it's been closed (App Store guideline 4), and
+// provides the standard Edit roles so copy/paste works in the text field.
+function createAppMenu() {
+    const isMac = process.platform === "darwin";
+    const template = [
+        ...(isMac ? [{ role: "appMenu" }] : []),
+        { role: "fileMenu" },
+        { role: "editMenu" },
+        { role: "viewMenu" },
+        {
+            role: "windowMenu",
+            submenu: [
+                {
+                    label: "Out Loud",
+                    accelerator: "CmdOrCtrl+1",
+                    click: () => showMainWindow(),
+                },
+                { type: "separator" },
+                { role: "minimize" },
+                { role: "zoom" },
+                ...(isMac
+                    ? [{ type: "separator" }, { role: "front" }]
+                    : [{ role: "close" }]),
+            ],
+        },
+    ];
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 function createTray() {
     // Use dedicated tray icon (transparent bg, black waveform for template)
@@ -632,6 +673,15 @@ ipcMain.handle("tts:voices", async () => {
 ipcMain.handle("settings:get", async () => {
     return getSharedSettings();
 });
+// Optional, user-supplied identity (name + email) for PostHog. Get returns the
+// stored values; set persists + pushes them to the person record and returns
+// the normalised result so the UI can reflect what was actually saved.
+ipcMain.handle("identity:get", async () => getUserIdentity());
+ipcMain.handle("identity:set", async (_event, input) => {
+    const saved = setUserIdentity(input || {});
+    track("identity_updated", { has_name: !!saved.name, has_email: !!saved.email });
+    return saved;
+});
 // Update shared settings from the renderer. We deliberately suppress the
 // settings:updated broadcast here — the renderer already has the new state
 // (it called us with it) and a broadcast would race with later keystrokes.
@@ -897,7 +947,14 @@ app.whenReady().then(() => {
     initTelemetry(isDev);
     trackSessionStart();
     createTTSWorker();
-    createExtensionServer();
+    // The browser-extension bridge listens for incoming localhost connections,
+    // which requires the com.apple.security.network.server sandbox entitlement.
+    // The Mac App Store rejects that entitlement (guideline 2.4.5(i)), so the
+    // extension API is only available in the Developer ID / direct-download build.
+    if (!process.mas) {
+        createExtensionServer();
+    }
+    createAppMenu();
     createTray();
     createWindow();
     preloadModel();

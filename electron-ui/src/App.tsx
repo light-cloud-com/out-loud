@@ -7,6 +7,7 @@ import { ProgressBar } from "./components/ProgressBar";
 import { SettingsCheckbox } from "./components/SettingsCheckbox";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { AboutDialog } from "./components/AboutDialog";
+import { IdentityDialog } from "./components/IdentityDialog";
 import { RecentsSidebar } from "./components/RecentsSidebar";
 import { useLibrary } from "./hooks/useLibrary";
 import { useAudioPlayer } from "./hooks/useAudioPlayer";
@@ -16,12 +17,16 @@ import { playClick } from "./lib/sound";
 import { track, lengthBucket } from "./lib/analytics";
 import { DEFAULT_TEXT } from "./constants";
 import iconUrl from "./assets/icon.png";
-import bmcButtonUrl from "./assets/bmc-button.svg";
+
+// Set once we've shown the optional "leave your email" nudge, so it never
+// reappears for this install.
+const IDENTITY_PROMPT_SEEN_KEY = "out-loud-identity-prompt-seen";
 
 function App() {
   const { settings, updateSetting } = useSettings();
   const { update, skipUpdate, open } = useUpdateCheck();
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [identityOpen, setIdentityOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [version, setVersion] = useState("");
@@ -39,7 +44,23 @@ function App() {
   const setText = useCallback((newText: string) => updateSetting("text", newText), [updateSetting]);
 
   const getVolume = useCallback(() => settings.volume, [settings.volume]);
-  const player = useAudioPlayer(getVolume);
+
+  // One-time, non-blocking nudge: the first time someone successfully exports
+  // audio, invite them (optionally) to leave an email. Shown once ever — the
+  // flag persists in localStorage — and skipped entirely if they've already
+  // given an email via the user icon.
+  const onExported = useCallback(() => {
+    if (localStorage.getItem(IDENTITY_PROMPT_SEEN_KEY)) return;
+    localStorage.setItem(IDENTITY_PROMPT_SEEN_KEY, "1");
+    window.electronAPI?.getIdentity().then((id) => {
+      if (id?.email) return; // already shared an email — don't pester
+      track("identity_prompt_shown", { trigger: "first_export" });
+      // Small delay so the file's Save/download visibly happens first.
+      setTimeout(() => setIdentityOpen(true), 800);
+    });
+  }, []);
+
+  const player = useAudioPlayer(getVolume, onExported);
   const { setVolume } = player;
 
   // Update player volume when slider changes
@@ -170,19 +191,29 @@ function App() {
             <img src={iconUrl} alt="Out Loud" className="h-7 w-7" />
             Out Loud
           </h1>
-          <a
-            href="https://buymeacoffee.com/julia_hk"
-            onClick={(e) => {
-              e.preventDefault();
-              window.open("https://buymeacoffee.com/julia_hk", "_blank");
-            }}
-            aria-label="Buy me a coffee"
-            title="Buy me a coffee"
-            className="inline-flex cursor-pointer items-center transition-opacity hover:opacity-90"
+          {/* Optional, opt-in: let users leave a name/email to stay in touch. */}
+          <button
+            onClick={() => setIdentityOpen(true)}
+            aria-label="Stay in touch (optional)"
+            title="Stay in touch (optional)"
             style={noDrag}
+            className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-gray-600/50 bg-gray-700/70 text-gray-300 transition-colors hover:border-gray-500/50 hover:bg-gray-600 hover:text-white focus:outline-none focus:ring-2 focus:ring-gray-500/30"
           >
-            <img src={bmcButtonUrl} alt="Buy me a coffee" className="h-8 w-auto" />
-          </a>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -363,6 +394,7 @@ function App() {
         onClose={() => setAboutOpen(false)}
         onOpen={open}
       />
+      <IdentityDialog open={identityOpen} onClose={() => setIdentityOpen(false)} />
     </div>
   );
 }

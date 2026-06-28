@@ -5,6 +5,8 @@ const DEFAULT_PREFS = {
     skippedVersion: null,
     lastCheckAt: 0,
     installId: null,
+    userName: null,
+    userEmail: null,
 };
 let cache = null;
 function prefsPath() {

@@ -13,6 +13,11 @@ interface UpdateInfo {
   downloadUrl: string;
 }
 
+interface UserIdentity {
+  name: string | null;
+  email: string | null;
+}
+
 interface ElectronAPI {
   getVoices: () => Promise<Array<{ id: string; name: string; lang: string }>>;
   generateStreamingTTS: (params: {
@@ -42,6 +47,8 @@ interface ElectronAPI {
   getSettings: () => Promise<SharedSettings>;
   updateSettings: (updates: Partial<SharedSettings>) => Promise<SharedSettings>;
   onSettingsUpdated: (callback: (settings: SharedSettings) => void) => () => void;
+  getIdentity: () => Promise<UserIdentity>;
+  setIdentity: (identity: { name: string; email: string }) => Promise<UserIdentity>;
   getUpdate: () => Promise<UpdateInfo | null>;
   onUpdateAvailable: (callback: (update: UpdateInfo | null) => void) => () => void;
   skipVersion: (version: string) => Promise<UpdateInfo | null>;

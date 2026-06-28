@@ -1,5 +1,13 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { Mp3Encoder } from "@breezystack/lamejs";
 import { track } from "../lib/analytics";
+
+// Audio export formats offered by the Download button.
+export type AudioFormat = "wav" | "mp3";
+
+// MP3 bitrate for exports. 192 kbps is transparent for speech and keeps files
+// small (~1.4 MB/min) versus uncompressed WAV (~10 MB/min).
+const MP3_KBPS = 192;
 
 // How many chunks ahead of the playhead the worker may generate during normal
 // playback (backpressure). Download/export lifts this cap to generate fully.
@@ -32,7 +40,10 @@ interface AudioPlayerState {
   isExporting: boolean;
 }
 
-export function useAudioPlayer(getVolume: () => number) {
+export function useAudioPlayer(
+  getVolume: () => number,
+  onExported?: (format: AudioFormat) => void
+) {
   const [state, setState] = useState<AudioPlayerState>({
     isPlaying: false,
     isPaused: false,
@@ -72,8 +83,17 @@ export function useAudioPlayer(getVolume: () => number) {
   // (monotonic during normal playback), and export bookkeeping.
   const currentReqIdRef = useRef<string | null>(null);
   const lastSentTargetRef = useRef<number>(-1);
-  const pendingExportRef = useRef<boolean>(false);
-  const exportWavRef = useRef<() => void>(() => {});
+  // Null = no export pending; otherwise the format to write once full
+  // generation finishes (see download() / onStreamComplete).
+  const pendingExportRef = useRef<AudioFormat | null>(null);
+  const exportAudioRef = useRef<(format: AudioFormat) => void>(() => {});
+
+  // Keep the "export finished" callback in a ref so exportAudio (a stable
+  // useCallback) always calls the latest one without re-subscribing.
+  const onExportedRef = useRef(onExported);
+  useEffect(() => {
+    onExportedRef.current = onExported;
+  }, [onExported]);
 
   const stopAudio = useCallback(() => {
     // Cancel any in-flight worker generation so it doesn't keep running (and a
@@ -82,7 +102,7 @@ export function useAudioPlayer(getVolume: () => number) {
       window.electronAPI?.cancelGeneration(currentReqIdRef.current);
       currentReqIdRef.current = null;
     }
-    pendingExportRef.current = false;
+    pendingExportRef.current = null;
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
@@ -384,7 +404,7 @@ export function useAudioPlayer(getVolume: () => number) {
       const reqId = crypto.randomUUID();
       currentReqIdRef.current = reqId;
       lastSentTargetRef.current = -1;
-      pendingExportRef.current = false;
+      pendingExportRef.current = null;
 
       // Set text-based estimate
       const CHARS_PER_SECOND = 14;
@@ -503,9 +523,10 @@ export function useAudioPlayer(getVolume: () => number) {
 
           // If a Download/export was waiting on full generation, build it now.
           if (pendingExportRef.current) {
-            pendingExportRef.current = false;
+            const format = pendingExportRef.current;
+            pendingExportRef.current = null;
             setState((s) => ({ ...s, isExporting: false }));
-            exportWavRef.current();
+            exportAudioRef.current(format);
           }
         });
 
@@ -555,8 +576,9 @@ export function useAudioPlayer(getVolume: () => number) {
     };
   }, []);
 
-  // Build a WAV from all generated chunks and trigger a browser download.
-  const exportWav = useCallback(() => {
+  // Stitch all generated chunks into one buffer, encode it in the requested
+  // format, and trigger a browser download.
+  const exportAudio = useCallback((format: AudioFormat) => {
     if (cachedAudioBuffersRef.current.length === 0) return;
 
     const buffers = cachedAudioBuffersRef.current;
@@ -575,13 +597,16 @@ export function useAudioPlayer(getVolume: () => number) {
     }
 
     offlineCtx.startRendering().then((renderedBuffer) => {
-      const wavData = audioBufferToWav(renderedBuffer);
-      const blob = new Blob([wavData], { type: "audio/wav" });
+      const { data, mime } =
+        format === "mp3"
+          ? { data: audioBufferToMp3(renderedBuffer), mime: "audio/mpeg" }
+          : { data: audioBufferToWav(renderedBuffer), mime: "audio/wav" };
+      const blob = new Blob([data], { type: mime });
       const url = URL.createObjectURL(blob);
 
       const now = new Date();
       const timestamp = now.toISOString().replace(/[:.T]/g, "-").slice(0, 19);
-      const filename = `out-loud-${timestamp}.wav`;
+      const filename = `out-loud-${timestamp}.${format}`;
 
       const a = document.createElement("a");
       a.href = url;
@@ -591,39 +616,44 @@ export function useAudioPlayer(getVolume: () => number) {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      track("audio_downloaded", { duration_seconds: renderedBuffer.duration });
+      track("audio_downloaded", { duration_seconds: renderedBuffer.duration, format });
+      onExportedRef.current?.(format);
     });
   }, []);
 
-  // Keep a stable ref so the per-play onStreamComplete handler can build the WAV
-  // once a forced full generation finishes.
+  // Keep a stable ref so the per-play onStreamComplete handler can build the
+  // file once a forced full generation finishes.
   useEffect(() => {
-    exportWavRef.current = exportWav;
-  }, [exportWav]);
+    exportAudioRef.current = exportAudio;
+  }, [exportAudio]);
 
-  // Download = "turn this into an audio file". If everything is already
-  // generated (cache or stream complete), export now; otherwise force full
-  // generation (lift the backpressure cap) and export when it completes.
-  const download = useCallback(() => {
-    if (allChunksReceivedRef.current) {
-      exportWav();
-      return;
-    }
-    if (!currentReqIdRef.current) return;
-    pendingExportRef.current = true;
-    setState((s) => ({ ...s, isExporting: true }));
-    // Pin the sent-target to MAX so updatePlayback's monotonic guard stops
-    // sending currentChunk+AHEAD, which would otherwise re-cap (the worker SETS
-    // the target). cancelExport resets this to re-arm normal buffering.
-    lastSentTargetRef.current = Number.MAX_SAFE_INTEGER;
-    window.electronAPI?.forceFullGeneration(currentReqIdRef.current);
-  }, [exportWav]);
+  // Download = "turn this into an audio file" in the chosen format. If
+  // everything is already generated (cache or stream complete), export now;
+  // otherwise force full generation (lift the backpressure cap) and export when
+  // it completes.
+  const download = useCallback(
+    (format: AudioFormat = "mp3") => {
+      if (allChunksReceivedRef.current) {
+        exportAudio(format);
+        return;
+      }
+      if (!currentReqIdRef.current) return;
+      pendingExportRef.current = format;
+      setState((s) => ({ ...s, isExporting: true }));
+      // Pin the sent-target to MAX so updatePlayback's monotonic guard stops
+      // sending currentChunk+AHEAD, which would otherwise re-cap (the worker SETS
+      // the target). cancelExport resets this to re-arm normal buffering.
+      lastSentTargetRef.current = Number.MAX_SAFE_INTEGER;
+      window.electronAPI?.forceFullGeneration(currentReqIdRef.current);
+    },
+    [exportAudio]
+  );
 
   // Cancel an in-progress export: stop forcing full generation and re-arm the
   // normal ~AHEAD buffer from the playhead, so playback continues uninterrupted.
   const cancelExport = useCallback(() => {
     if (!pendingExportRef.current) return;
-    pendingExportRef.current = false;
+    pendingExportRef.current = null;
     setState((s) => ({ ...s, isExporting: false }));
     if (currentReqIdRef.current && audioCtxRef.current) {
       const currentChunk = getCurrentChunkIndex(audioCtxRef.current.currentTime);
@@ -641,6 +671,48 @@ export function useAudioPlayer(getVolume: () => number) {
     download,
     cancelExport,
   };
+}
+
+// Convert one float channel (-1..1) to 16-bit PCM samples for the MP3 encoder.
+function floatTo16BitPCM(input: Float32Array): Int16Array {
+  const out = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
+}
+
+// Encode an AudioBuffer to MP3 (mono or stereo) with lamejs. Returns the raw
+// MP3 bytes ready to wrap in a Blob.
+function audioBufferToMp3(buffer: AudioBuffer): Uint8Array {
+  const channels = Math.min(buffer.numberOfChannels, 2);
+  const encoder = new Mp3Encoder(channels, buffer.sampleRate, MP3_KBPS);
+
+  const left = floatTo16BitPCM(buffer.getChannelData(0));
+  const right = channels > 1 ? floatTo16BitPCM(buffer.getChannelData(1)) : null;
+
+  const SAMPLE_BLOCK = 1152; // lamejs processes one MPEG frame at a time
+  const parts: Uint8Array[] = [];
+  for (let i = 0; i < left.length; i += SAMPLE_BLOCK) {
+    const l = left.subarray(i, i + SAMPLE_BLOCK);
+    const chunk = right
+      ? encoder.encodeBuffer(l, right.subarray(i, i + SAMPLE_BLOCK))
+      : encoder.encodeBuffer(l);
+    // Copy out: lamejs may reuse its internal buffer between calls.
+    if (chunk.length > 0) parts.push(new Uint8Array(chunk));
+  }
+  const tail = encoder.flush();
+  if (tail.length > 0) parts.push(new Uint8Array(tail));
+
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
 }
 
 // Convert AudioBuffer to WAV format
