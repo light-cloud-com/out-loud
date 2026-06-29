@@ -84,17 +84,19 @@ codesign --force --deep --sign - \
 
 Defined in [`build-resources/entitlements.mas.plist`](../../build-resources/entitlements.mas.plist):
 
-| Entitlement                                              | Purpose                                           |
-| -------------------------------------------------------- | ------------------------------------------------- |
-| `com.apple.security.app-sandbox`                         | Required for MAS                                  |
-| `com.apple.security.network.client`                      | Outbound network (unused, kept for compatibility) |
-| `com.apple.security.network.server`                      | Local HTTP API on port 51730                      |
-| `com.apple.security.files.user-selected.read-write`      | Export audio files                                |
-| `com.apple.security.files.downloads.read-write`          | Save to Downloads                                 |
-| `com.apple.security.cs.allow-jit`                        | ONNX runtime                                      |
-| `com.apple.security.cs.allow-unsigned-executable-memory` | ONNX runtime                                      |
-| `com.apple.security.cs.disable-library-validation`       | Native dependencies                               |
+| Entitlement                                              | Purpose                                              |
+| -------------------------------------------------------- | ---------------------------------------------------- |
+| `com.apple.security.app-sandbox`                         | Required for MAS                                     |
+| `com.apple.security.network.client`                      | Outgoing connections only (telemetry, update checks) |
+| `com.apple.security.files.user-selected.read-write`      | Save audio exports via the native Save panel         |
+| `com.apple.security.cs.allow-jit`                        | ONNX runtime                                         |
+| `com.apple.security.cs.allow-unsigned-executable-memory` | ONNX runtime                                         |
+| `com.apple.security.cs.disable-library-validation`       | Native dependencies                                  |
 
+> The local extension HTTP server (which would need `network.server`) is disabled in the MAS build per guideline 2.4.5(i), so that entitlement is not declared.
+>
+> `files.downloads.read-write` was removed: exports go through the user-selected Save panel and the app never writes to `~/Downloads` directly. Apple rejected it under guideline 2.4.5(i) as an entitlement without matching functionality.
+>
 > JIT and unsigned-memory entitlements may require an exception request from Apple for App Store approval.
 
 ## Troubleshooting
