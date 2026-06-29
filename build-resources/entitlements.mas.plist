@@ -12,12 +12,10 @@
     <key>com.apple.security.network.client</key>
     <true/>
 
-    <!-- File access for saving audio exports -->
+    <!-- File access for saving audio exports. Exports go through the native
+         Save panel (powerbox), so user-selected scope is sufficient — the app
+         never writes to the Downloads folder directly. -->
     <key>com.apple.security.files.user-selected.read-write</key>
-    <true/>
-
-    <!-- Downloads folder access -->
-    <key>com.apple.security.files.downloads.read-write</key>
     <true/>
 
     <!-- Required for Electron/ONNX runtime -->
