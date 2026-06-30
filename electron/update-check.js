@@ -101,7 +101,9 @@ async function fetchHighlights() {
             .map((line) => line.replace(/^\s*[-*•]\s*/, "").trim())
             .filter((line) => line.length > 0)
             .slice(0, MAX_HIGHLIGHTS)
-            .map((line) => line.length > MAX_HIGHLIGHT_LEN ? line.slice(0, MAX_HIGHLIGHT_LEN - 1).trimEnd() + "…" : line);
+            .map((line) => line.length > MAX_HIGHLIGHT_LEN
+            ? line.slice(0, MAX_HIGHLIGHT_LEN - 1).trimEnd() + "…"
+            : line);
     }
     catch {
         // Offline, blocked, rate-limited, or timed out — stay silent.

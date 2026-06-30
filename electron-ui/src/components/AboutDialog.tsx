@@ -1,15 +1,42 @@
+import type { ReactNode } from "react";
 import iconUrl from "../assets/icon.png";
+import { KeyCombo } from "./KeyCombo";
+import { IS_MAC } from "../lib/platform";
 
 interface AboutDialogProps {
   open: boolean;
   version: string;
+  shortcut: string;
   onClose: () => void;
   onOpen: (url: string) => void;
 }
 
 const REPO_URL = "https://github.com/light-cloud-com/out-loud";
 
-function Row({ keys, desc }: { keys: string; desc: string }) {
+// "Control+Alt+S" → "Control (⌃) + Option (⌥) + S" (mac) so users know the keys
+function formatShortcutVerbose(accelerator: string): string {
+  const names: Record<string, string> = IS_MAC
+    ? {
+        Command: "Command (⌘)",
+        Super: "Command (⌘)",
+        Meta: "Command (⌘)",
+        Control: "Control (⌃)",
+        Alt: "Option (⌥)",
+        Shift: "Shift (⇧)",
+      }
+    : {
+        Command: "Win (⊞)",
+        Super: "Win (⊞)",
+        Meta: "Win (⊞)",
+        Control: "Ctrl",
+        Alt: "Alt",
+        Shift: "Shift",
+      };
+  const parts = (accelerator || "").split("+").map((p) => names[p] ?? p);
+  return parts.join(" + ");
+}
+
+function Row({ keys, desc }: { keys: ReactNode; desc: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-0.5">
       <kbd className="rounded border border-gray-600 bg-gray-800 px-1.5 py-0.5 font-mono text-[10px] text-gray-200">
@@ -20,8 +47,13 @@ function Row({ keys, desc }: { keys: string; desc: string }) {
   );
 }
 
-export function AboutDialog({ open, version, onClose, onOpen }: AboutDialogProps) {
+export function AboutDialog({ open, version, shortcut, onClose, onOpen }: AboutDialogProps) {
   if (!open) return null;
+
+  const isMac = IS_MAC;
+  // Reflect the user's actual configured shortcut, spelled out so users know
+  // exactly which keys to press.
+  const readAloudKeysVerbose = formatShortcutVerbose(shortcut);
 
   return (
     <div
@@ -55,6 +87,27 @@ export function AboutDialog({ open, version, onClose, onOpen }: AboutDialogProps
           <Row keys="Enter" desc="Speak the text, then clear it" />
           <Row keys="Shift + Enter" desc="New line (don't speak)" />
           <Row keys="Esc" desc="Jump back to the text box" />
+          <Row
+            keys={<KeyCombo accelerator={shortcut} />}
+            desc="Read selected text aloud — in any app"
+          />
+        </section>
+
+        <section className="mb-4">
+          <h3 className="mb-1 font-semibold text-gray-200">Read aloud from anywhere</h3>
+          <p className="text-gray-400">
+            Select text in any app — Slack, your browser, Mail, a PDF — and press{" "}
+            <span className="font-medium text-gray-200">{readAloudKeysVerbose}</span> to hear it
+            (press the keys together). Change it any time below. Out Loud just needs to be running
+            (it can stay in the {isMac ? "menu bar" : "tray"}).
+          </p>
+          {isMac && (
+            <p className="mt-1 text-gray-500">
+              First time: grant Out Loud <span className="text-gray-300">Accessibility</span>{" "}
+              permission in System Settings → Privacy &amp; Security → Accessibility, so it can read
+              your selection. Until then, copy the text first, then press the shortcut.
+            </p>
+          )}
         </section>
 
         <section className="mb-4">

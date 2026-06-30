@@ -1,4 +1,6 @@
 import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, } from "electron";
+import { registerSelectionReader, unregisterSelectionReader, setSelectionShortcut, suspendSelectionReader, resumeSelectionReader, DEFAULT_READ_ALOUD_SHORTCUT, } from "./selection-reader.js";
+import { installMacService } from "./mac-service.js";
 import { Worker } from "worker_threads";
 import * as path from "path";
 import * as fs from "fs";
@@ -469,12 +471,18 @@ let sharedSettings = {
     voice: "af_heart",
     volume: 80,
     highlightChunk: false,
+    readAloudShortcut: DEFAULT_READ_ALOUD_SHORTCUT,
 };
 function getSharedSettings() {
     return { ...sharedSettings };
 }
 function updateSharedSettings(updates, options = {}) {
+    const prevShortcut = sharedSettings.readAloudShortcut;
     sharedSettings = { ...sharedSettings, ...updates };
+    // Re-register the global hotkey when the user changes it in Settings.
+    if (updates.readAloudShortcut && updates.readAloudShortcut !== prevShortcut) {
+        setSelectionShortcut(sharedSettings.readAloudShortcut);
+    }
     // Broadcast to the renderer ONLY when the change came from outside the
     // renderer (e.g. the Chrome extension via the HTTP API). Broadcasting
     // back to the same renderer that initiated an IPC update races with
@@ -655,6 +663,38 @@ function createExtensionServer() {
                     res.writeHead(500, { "Content-Type": "application/json" });
                     res.end(JSON.stringify({ error: error.message }));
                 }
+            });
+            return;
+        }
+        // POST /api/v1/speak - speak text aloud on THIS device (drives the macOS
+        // "Read out loud" Services entry). Body is raw text, or JSON { "text": "" }.
+        if (req.method === "POST" && url.pathname === "/api/v1/speak") {
+            let body = "";
+            req.on("data", (chunk) => (body += chunk));
+            req.on("end", () => {
+                let text = body;
+                try {
+                    const parsed = JSON.parse(body);
+                    if (parsed && typeof parsed.text === "string")
+                        text = parsed.text;
+                }
+                catch {
+                    // Not JSON — treat the raw body as the text to speak.
+                }
+                text = (text || "").trim();
+                if (!text) {
+                    res.writeHead(400, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ error: "no text" }));
+                    return;
+                }
+                track("extension_api_request", {
+                    endpoint: "speak",
+                    text_length_bucket: lengthBucket(text.length),
+                });
+                // Play on this device, even if the window is hidden in the tray.
+                mainWindow?.webContents.send("external:speak", { text, source: "service" });
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: true }));
             });
             return;
         }
@@ -904,6 +944,14 @@ ipcMain.on("tray:playing", (_event, playing) => {
         stopTrayAnimation();
     }
 });
+// While the user records a new read-aloud shortcut in Settings, release the
+// global hotkey so it neither fires nor swallows the keys being recorded.
+ipcMain.on("shortcut:recording", (_event, recording) => {
+    if (recording)
+        suspendSelectionReader();
+    else
+        resumeSelectionReader();
+});
 // ---- Update notice (GitHub latest release vs running version) ----
 // Current available-update info, or null when up to date.
 ipcMain.handle("update:get", async () => getUpdate());
@@ -951,6 +999,11 @@ ipcMain.on("app:quit", () => {
     app.quit();
 });
 // ============ App Lifecycle ============
+// Audio is started programmatically (global hotkey / macOS "Read out loud"
+// Service), not always from a click in our own window. Chromium's default
+// autoplay policy gates AudioContext on a user gesture in the page, which would
+// leave hotkey-triggered playback silently suspended. Lift that gate.
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.whenReady().then(() => {
     // Init telemetry first so app_launched and early events are captured. No-op
     // when not configured / disabled; dev builds send too, tagged is_dev.
@@ -969,6 +1022,15 @@ app.whenReady().then(() => {
     createWindow();
     preloadModel();
     startUpdateChecks(() => mainWindow);
+    // Global hotkey to read the current selection aloud from any app (incl. the
+    // Slack desktop app, which can't host our own UI).
+    registerSelectionReader(() => mainWindow, sharedSettings.readAloudShortcut);
+    // macOS only: install the "Read out loud" right-click Services entry, which
+    // pipes the selection to the local /api/v1/speak endpoint. Not available in
+    // MAS builds (no localhost server there).
+    if (process.platform === "darwin" && !process.mas) {
+        installMacService();
+    }
     app.on("activate", () => {
         if (mainWindow) {
             mainWindow.show();
@@ -980,6 +1042,9 @@ app.whenReady().then(() => {
 });
 app.on("window-all-closed", () => {
     // Don't quit - keep running in tray
+});
+app.on("will-quit", () => {
+    unregisterSelectionReader();
 });
 // Guards against a second before-quit re-entering teardown (e.g. the user
 // clicking Quit again during the brief telemetry-flush window before app.exit).
