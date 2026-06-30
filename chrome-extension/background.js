@@ -14,6 +14,14 @@ chrome.runtime.onInstalled.addListener(() => {
     title: "Read out loud",
     contexts: ["selection"],
   });
+  // Slack-only: read the right-clicked message aloud (no selection needed).
+  // slack.js remembers the right-clicked message and plays it inline.
+  chrome.contextMenus.create({
+    id: "read-slack-message",
+    title: "Read message out loud",
+    contexts: ["page"],
+    documentUrlPatterns: ["*://app.slack.com/*"],
+  });
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -26,6 +34,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         });
       }, 500);
     });
+  } else if (info.menuItemId === "read-slack-message" && tab?.id) {
+    chrome.tabs.sendMessage(tab.id, { type: "SLACK_PLAY_LAST" }).catch(() => {});
   }
 });
 

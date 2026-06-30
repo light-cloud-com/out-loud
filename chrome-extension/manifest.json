@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Out Loud - Text to Speech",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Read selected text aloud using AI Text-to-Speech",
   "permissions": ["activeTab", "storage", "sidePanel", "contextMenus"],
   "host_permissions": ["<all_urls>"],
@@ -24,6 +24,11 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"]
+    },
+    {
+      "matches": ["*://app.slack.com/*"],
+      "js": ["constants.js", "src/streaming-player.js", "slack.js"],
+      "css": ["slack.css"]
     }
   ],
   "action": {

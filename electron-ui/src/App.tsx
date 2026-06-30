@@ -5,6 +5,7 @@ import { VolumeSlider } from "./components/VolumeSlider";
 import { PlaybackControls } from "./components/PlaybackControls";
 import { ProgressBar } from "./components/ProgressBar";
 import { SettingsCheckbox } from "./components/SettingsCheckbox";
+import { ShortcutRecorder } from "./components/ShortcutRecorder";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { AboutDialog } from "./components/AboutDialog";
 import { IdentityDialog } from "./components/IdentityDialog";
@@ -139,6 +140,37 @@ function App() {
     player.play(text, settings.voice, settings.language, { forceRestart: true });
     setText("");
   }, [text, settings.voice, settings.language, player, setText, lib]);
+
+  // Text captured by the global read-selection hotkey (works from any app, incl.
+  // Slack desktop): drop it into the editor and speak it immediately.
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api?.onExternalSpeak) return;
+    return api.onExternalSpeak(({ text: incoming, source }) => {
+      // Copied selections (esp. from web pages) carry junk: hidden/zero-width
+      // chars, tabs, and block whitespace. Normalize to clean, speakable text.
+      const t = incoming
+        .replace(/\r\n?/g, "\n")
+        // eslint-disable-next-line no-control-regex -- strip control & zero-width chars from copied text
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u200B-\u200D\uFEFF]/g, "")
+        .replace(/[ \t]+/g, " ")
+        .replace(/[ \t]*\n[ \t]*/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      if (!t) return;
+      // Track reads triggered outside the app window (global hotkey / macOS
+      // "Read out loud" Service) so usage of the feature is visible.
+      track("quick_speak_initiated", {
+        text_length_bucket: lengthBucket(t.length),
+        language: settings.language,
+        voice_id: settings.voice,
+        trigger_type: source === "service" ? "macos_service" : "global_shortcut",
+      });
+      setText(t);
+      lib.addSession(t, settings.voice, settings.language);
+      player.play(t, settings.voice, settings.language, { forceRestart: true });
+    });
+  }, [settings.voice, settings.language, player, setText, lib]);
 
   // Drag-and-drop a file anywhere on the content → load its text into the editor.
   const onDrop = useCallback(
@@ -357,6 +389,10 @@ function App() {
                 checked={settings.highlightChunk}
                 onChange={(checked) => updateSetting("highlightChunk", checked)}
               />
+              <ShortcutRecorder
+                value={settings.readAloudShortcut}
+                onChange={(acc) => updateSetting("readAloudShortcut", acc)}
+              />
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -391,6 +427,7 @@ function App() {
       <AboutDialog
         open={aboutOpen}
         version={version}
+        shortcut={settings.readAloudShortcut}
         onClose={() => setAboutOpen(false)}
         onOpen={open}
       />
