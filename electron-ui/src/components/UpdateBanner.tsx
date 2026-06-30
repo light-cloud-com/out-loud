@@ -19,9 +19,17 @@ export function UpdateBanner({ update, onOpen, onSkip }: UpdateBannerProps) {
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="font-semibold">Update available — v{update.latest}</div>
-          <p className="mt-0.5 leading-snug opacity-90">
-            A newer version of Out Loud is ready to download.
-          </p>
+          {update.highlights.length > 0 ? (
+            <ul className="mt-1 list-disc space-y-0.5 pl-4 leading-snug opacity-90">
+              {update.highlights.map((highlight, i) => (
+                <li key={i}>{highlight}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-0.5 leading-snug opacity-90">
+              A newer version of Out Loud is ready to download.
+            </p>
+          )}
           <div className="mt-2 flex items-center gap-2">
             <button
               onClick={() => onOpen(update.downloadUrl)}
