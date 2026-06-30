@@ -11,6 +11,7 @@ interface UpdateInfo {
   latest: string;
   notesUrl: string;
   downloadUrl: string;
+  highlights: string[];
 }
 
 interface UserIdentity {

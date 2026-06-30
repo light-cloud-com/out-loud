@@ -14,6 +14,10 @@ export interface UpdateInfo {
   latest: string;
   notesUrl: string;
   downloadUrl: string;
+  // Optional human-curated one-line highlights for the latest release, pulled
+  // from WHATSNEW.txt at the repo root on main. Empty → the banner shows its
+  // generic "a newer version is ready" copy instead.
+  highlights: string[];
 }
 
 interface GithubAsset {
@@ -23,6 +27,11 @@ interface GithubAsset {
 
 const RELEASES_API = "https://api.github.com/repos/light-cloud-com/out-loud/releases/latest";
 const RELEASES_URL = "https://github.com/light-cloud-com/out-loud/releases/latest";
+// Human-curated highlights for the latest release. One short line per bullet
+// (e.g. "GPU support"); empty file → no highlights, generic banner copy.
+const WHATSNEW_URL = "https://raw.githubusercontent.com/light-cloud-com/out-loud/main/WHATSNEW.txt";
+const MAX_HIGHLIGHTS = 5;
+const MAX_HIGHLIGHT_LEN = 140;
 const POLL_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const FETCH_TIMEOUT_MS = 8000;
 
@@ -107,6 +116,39 @@ async function fetchLatestRelease(): Promise<{
   }
 }
 
+// Fetch the curated highlights for the latest release from WHATSNEW.txt at the
+// repo root on main. Each non-blank line becomes one bullet (leading list
+// markers stripped). Missing/empty/blocked/over-long → best-effort fallback to
+// an empty list, so the banner degrades to its generic copy.
+async function fetchHighlights(): Promise<string[]> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(WHATSNEW_URL, {
+      signal: controller.signal,
+      headers: { "User-Agent": "out-loud-app" },
+      cache: "no-cache",
+    });
+    if (!res.ok) return [];
+    const text = await res.text();
+    return text
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^\s*[-*•]\s*/, "").trim())
+      .filter((line) => line.length > 0)
+      .slice(0, MAX_HIGHLIGHTS)
+      .map((line) =>
+        line.length > MAX_HIGHLIGHT_LEN
+          ? line.slice(0, MAX_HIGHLIGHT_LEN - 1).trimEnd() + "…"
+          : line
+      );
+  } catch {
+    // Offline, blocked, rate-limited, or timed out — stay silent.
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function computeUpdate(release: {
   tag: string;
   notesUrl: string;
@@ -123,6 +165,7 @@ function computeUpdate(release: {
     latest,
     notesUrl: release.notesUrl,
     downloadUrl: pickAsset(release.assets) || release.notesUrl,
+    highlights: [],
   };
 }
 
@@ -134,7 +177,10 @@ async function refresh() {
   const release = await fetchLatestRelease();
   setPrefs({ lastCheckAt: Date.now() });
   if (!release) return;
-  cachedUpdate = computeUpdate(release);
+  const update = computeUpdate(release);
+  // Only fetch highlights when there's actually an update to annotate.
+  if (update) update.highlights = await fetchHighlights();
+  cachedUpdate = update;
   // Announce once per newly-detected version (the poll runs every 6h).
   if (cachedUpdate && cachedUpdate.latest !== lastAnnounced) {
     lastAnnounced = cachedUpdate.latest;

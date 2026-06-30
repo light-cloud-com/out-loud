@@ -192,6 +192,7 @@ interface UpdateInfo {
   latest: string;
   notesUrl: string;
   downloadUrl: string;
+  highlights: string[];
 }
 
 // TypeScript declaration for the exposed API
