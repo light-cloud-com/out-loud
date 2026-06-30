@@ -1,13 +1,13 @@
 {
   "name": "out-loud",
   "version": "2.0.1",
-  "description": "Free, open-source, 100% offline AI text-to-speech desktop app powered by Kokoro-82M.",
+  "description": "Free for non-commercial use, source-available, 100% offline AI text-to-speech desktop app powered by Kokoro-82M.",
   "author": {
     "name": "Julia Kafarska",
     "email": "labs@light-cloud.com",
     "url": "https://out-loud.io"
   },
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://github.com/light-cloud-com/out-loud#readme",
   "repository": {
     "type": "git",

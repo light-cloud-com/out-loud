@@ -5,7 +5,7 @@
 <h1 align="center">Out Loud</h1>
 
 <p align="center">
-  <b>Free, open-source, 100% offline AI text-to-speech.</b>
+  <b>Free for non-commercial use, source-available, 100% offline AI text-to-speech.</b>
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
+  <a href="./LICENSE"><img alt="License: PolyForm Noncommercial 1.0.0" src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-orange.svg" /></a>
   <a href="#install"><img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-blue" /></a>
 </p>
 
@@ -275,7 +275,7 @@ Issues, pull requests, translations, and new voices are all welcome. See [CONTRI
 
 ## Support
 
-Out Loud is free and open source. If it's useful to you, you can support its development:
+Out Loud is free for non-commercial use and source-available. If it's useful to you, you can support its development:
 
 <a href="https://buymeacoffee.com/julia_hk"><img src="./docs/assets/bmc-button.svg" alt="Buy me a coffee" height="48" /></a>
 
@@ -283,7 +283,7 @@ Out Loud is free and open source. If it's useful to you, you can support its dev
 
 ## License
 
-MIT. See [LICENSE](./LICENSE).
+PolyForm Noncommercial License 1.0.0 — free to use, modify, and share for any non-commercial purpose. Commercial use is not permitted. See [LICENSE](./LICENSE).
 
 Bundled third-party components (Kokoro-82M, espeak-ng, onnxruntime-node, Electron, ffmpeg, fonts) retain their own licenses. See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for the full list.
 
