@@ -9,6 +9,7 @@ import ffmpegPath from "ffmpeg-static";
 // @ts-ignore
 import ESpeakNg from "espeak-ng";
 import { createWavBuffer } from "./shared-audio.js";
+import { splitLeadingPhonemes } from "./phoneme-split.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // Resolve a path that may live inside app.asar to its real on-disk location
@@ -44,11 +45,20 @@ else {
 }
 const MODEL_CONTEXT_WINDOW = 512;
 const SAMPLE_RATE = 24000;
-// Look-ahead sizes per acceleration mode for streaming processing
+// fastStart: phoneme budget for the carved-off first chunk of a generation.
+// ~48 phonemes is ~8-10 words: enough audio (~2-3s) to cover the next
+// inference, small enough to synthesize in well under half the time of a full
+// sentence.
+const FIRST_CHUNK_PHONEMES = 48;
+// Max concurrent inferences per acceleration mode. Measured on the CPU EP
+// (M1, q8f16): one session.run already saturates the ONNX thread pool, so
+// extra in-flight inferences add ZERO throughput while tripling per-chunk
+// latency and starving espeak phonemization of cores. Keep 1 for CPU-backed
+// modes; revisit per-EP if a real GPU provider lands.
 const LOOK_AHEAD_SIZES = {
-    cpu: 4,
-    coreml: 3,
-    auto: 3,
+    cpu: 1,
+    coreml: 1,
+    auto: 1,
 };
 // GPU execution providers we know how to use, in preference order. We only
 // actually try the ones the installed onnxruntime-node binary was built with
@@ -707,47 +717,112 @@ async function generateUnitsToStream(params, emit, isAborted) {
     const tokensPerChunk = MODEL_CONTEXT_WINDOW - 2;
     const session = await ensureSession(params.model, params.acceleration);
     const combinedVoice = await combineVoices(parseVoiceFormula(params.voiceFormula));
-    const lookAhead = LOOK_AHEAD_SIZES[params.acceleration] || 3;
-    // Flatten all units into one ordered chunk list, tagged with unitId. A unit
-    // that produces no audible chunks still gets a unitDone so the highlight can
+    const lookAhead = LOOK_AHEAD_SIZES[params.acceleration] || 1;
+    // ---- Lazy, bounded preparation (producer) ----
+    // Phonemization (espeak, ~60ms+ per segment) used to run for the WHOLE batch
+    // before the first inference, pushing first audio out by 1-2s for a 10-unit
+    // window. Instead a producer preps units lazily, staying only PREP_AHEAD
+    // chunks ahead of inference: first audio starts after ONE unit's
+    // phonemization, and espeak keeps overlapping inference without ever
+    // front-loading the batch. A unit that produces no audible chunks still gets
+    // a unitDone (emitted when the producer reaches it) so the highlight can
     // advance past it.
+    const PREP_AHEAD = Math.max(lookAhead + 2, 4);
     const prepared = [];
-    for (const unit of params.units) {
-        if (isAborted())
-            return;
-        const chunks = await preprocessText(unit.text, params.lang, tokensPerChunk);
-        const unitChunks = [];
-        for (const chunk of chunks) {
-            if (chunk.type === "silence") {
-                unitChunks.push({
-                    type: "silence",
-                    silenceLength: Math.floor(chunk.durationSeconds * SAMPLE_RATE),
-                    unitId: unit.id,
-                    isUnitEnd: false,
-                });
-            }
-            else if (chunk.type === "text" && (chunk.tokens?.length ?? 0) >= 1) {
-                unitChunks.push({ type: "text", tokens: chunk.tokens, unitId: unit.id, isUnitEnd: false });
-            }
-        }
-        if (unitChunks.length === 0) {
-            emit({ requestId: params.requestId, type: "unitDone", data: { unitId: unit.id } });
-            continue;
-        }
-        unitChunks[unitChunks.length - 1].isUnitEnd = true;
-        prepared.push(...unitChunks);
-    }
-    const total = prepared.length;
-    if (total === 0) {
-        emit({ requestId: params.requestId, type: "genComplete" });
-        return;
-    }
-    const results = new Array(total).fill(null);
-    const completed = new Array(total).fill(false);
+    let prepDone = false;
+    let sawFirstTextChunk = false;
+    let wakeConsumerFn = null;
+    let wakeProducerFn = null;
+    const wakeConsumer = () => {
+        const w = wakeConsumerFn;
+        wakeConsumerFn = null;
+        if (w)
+            w();
+    };
+    const wakeProducer = () => {
+        const w = wakeProducerFn;
+        wakeProducerFn = null;
+        if (w)
+            w();
+    };
+    const results = [];
+    const completed = [];
     let nextToYield = 0;
     let nextToStart = 0;
-    let completedCount = 0;
     const inFlight = new Map();
+    const prepare = async () => {
+        try {
+            for (const unit of params.units) {
+                if (isAborted())
+                    return;
+                while (prepared.length - nextToStart >= PREP_AHEAD) {
+                    await new Promise((resolve) => {
+                        wakeProducerFn = resolve;
+                    });
+                    if (isAborted())
+                        return;
+                }
+                const chunks = await preprocessText(unit.text, params.lang, tokensPerChunk);
+                const unitChunks = [];
+                for (const chunk of chunks) {
+                    if (chunk.type === "silence") {
+                        unitChunks.push({
+                            type: "silence",
+                            silenceLength: Math.floor(chunk.durationSeconds * SAMPLE_RATE),
+                            unitId: unit.id,
+                            isUnitEnd: false,
+                        });
+                    }
+                    else if (chunk.type === "text" && (chunk.tokens?.length ?? 0) >= 1) {
+                        if (!sawFirstTextChunk && params.fastStart) {
+                            sawFirstTextChunk = true;
+                            // Carve a small head off the generation's first text chunk (word
+                            // boundary only) so the first inference is short and audio starts
+                            // flowing; the head is long enough to cover the next inference.
+                            const split = splitLeadingPhonemes(chunk.content, FIRST_CHUNK_PHONEMES);
+                            const headTokens = split ? tokenize(split[0]) : [];
+                            const restTokens = split ? tokenize(split[1]) : [];
+                            if (headTokens.length >= 1 && restTokens.length >= 1) {
+                                unitChunks.push({
+                                    type: "text",
+                                    tokens: headTokens,
+                                    unitId: unit.id,
+                                    isUnitEnd: false,
+                                });
+                                unitChunks.push({
+                                    type: "text",
+                                    tokens: restTokens,
+                                    unitId: unit.id,
+                                    isUnitEnd: false,
+                                });
+                                continue;
+                            }
+                        }
+                        sawFirstTextChunk = true;
+                        unitChunks.push({
+                            type: "text",
+                            tokens: chunk.tokens,
+                            unitId: unit.id,
+                            isUnitEnd: false,
+                        });
+                    }
+                }
+                if (unitChunks.length === 0) {
+                    emit({ requestId: params.requestId, type: "unitDone", data: { unitId: unit.id } });
+                    continue;
+                }
+                unitChunks[unitChunks.length - 1].isUnitEnd = true;
+                prepared.push(...unitChunks);
+                wakeConsumer();
+            }
+        }
+        finally {
+            // Always flip prepDone and wake the consumer, even on abort/throw, so
+            // the drive loop can never park forever waiting for more chunks.
+            prepDone = true;
+            wakeConsumer();
+        }
+    };
     const processChunk = async (idx) => {
         const pc = prepared[idx];
         if (pc.type === "silence") {
@@ -768,7 +843,7 @@ async function generateUnitsToStream(params, emit, isAborted) {
         return { index: idx, waveform };
     };
     const yieldReady = () => {
-        while (nextToYield < total && completed[nextToYield]) {
+        while (nextToYield < prepared.length && completed[nextToYield]) {
             const pc = prepared[nextToYield];
             const waveform = results[nextToYield];
             const wavBuffer = createWavBuffer(waveform, SAMPLE_RATE);
@@ -786,7 +861,7 @@ async function generateUnitsToStream(params, emit, isAborted) {
         }
     };
     const fill = () => {
-        while (inFlight.size < lookAhead && nextToStart < total) {
+        while (inFlight.size < lookAhead && nextToStart < prepared.length) {
             if (isAborted())
                 return;
             const idx = nextToStart++;
@@ -795,28 +870,40 @@ async function generateUnitsToStream(params, emit, isAborted) {
             promise.then((r) => {
                 results[r.index] = r.waveform;
                 completed[r.index] = true;
-                completedCount++;
                 inFlight.delete(r.index);
                 yieldReady();
+                wakeProducer(); // inference advanced; the producer may prep further ahead
                 if (!isAborted())
                     fill();
             });
         }
+        wakeProducer(); // nextToStart advanced; unblock a parked producer
     };
-    fill();
-    while (completedCount < total) {
-        if (isAborted())
-            return;
+    // Drive: consume prepared chunks as the producer delivers them. The two
+    // parks are mutually exclusive (the consumer only parks when it has nothing
+    // startable, the producer only parks when it is PREP_AHEAD chunks ahead), so
+    // this cannot deadlock; abort wakes both via the finally/wake calls below.
+    const prepPromise = prepare();
+    while (!isAborted()) {
+        fill();
         if (inFlight.size > 0) {
             await Promise.race(inFlight.values());
         }
-        else {
-            break;
+        else if (!prepDone) {
+            await new Promise((resolve) => {
+                wakeConsumerFn = resolve;
+            });
+        }
+        else if (nextToStart >= prepared.length) {
+            break; // nothing in flight, nothing startable, nothing more coming
         }
     }
+    wakeProducer(); // in case we exited on abort while the producer was parked
+    await prepPromise;
+    if (isAborted())
+        return;
     yieldReady();
-    if (!isAborted())
-        emit({ requestId: params.requestId, type: "genComplete" });
+    emit({ requestId: params.requestId, type: "genComplete" });
 }
 // Cleanup function for graceful shutdown
 async function cleanup() {
@@ -849,12 +936,19 @@ parentPort?.on("message", async (message) => {
             return;
         try {
             console.log("Preloading model:", data.model);
-            await getModel(data.model);
+            // Build the ONNX session now (not just read the model bytes) so the
+            // ~600ms session creation is paid at app launch instead of on the
+            // user's first play.
+            await ensureSession(data.model, data.acceleration || "cpu");
             console.log("Model preloaded successfully");
         }
         catch (error) {
             console.error("Failed to preload model:", error);
         }
+        parentPort?.postMessage({
+            type: "preloadComplete",
+            data: { sessionReady: cachedSession !== null },
+        });
         return;
     }
     if (type === "cancel") {

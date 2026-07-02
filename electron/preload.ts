@@ -149,6 +149,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       requestId: string;
       units: { id: string; text: string }[];
       voice: string;
+      fastStart?: boolean;
     }) => ipcRenderer.send("reader:generate", params),
     cancel: (requestId: string) => ipcRenderer.send("reader:cancel", requestId),
     getRecents: () => ipcRenderer.invoke("reader:recents:get"),

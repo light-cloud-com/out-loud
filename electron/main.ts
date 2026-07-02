@@ -422,7 +422,9 @@ async function preloadModel() {
     console.log("[Main] Requesting model preload...");
     ttsWorker.postMessage({
       type: "preload",
-      data: { model: "model_q8f16" },
+      // acceleration matches every generation call site so the prewarmed
+      // session is the one they reuse (no rebuild on first play).
+      data: { model: "model_q8f16", acceleration: TTS_ACCELERATION },
     });
   }
 }
@@ -453,6 +455,9 @@ function readerGenerate(params: {
   requestId: string;
   units: { id: string; text: string }[];
   voice: string;
+  // "Playback buffer is empty" (play/seek): worker carves a small first chunk
+  // for fast first audio. Refill batches must leave this unset.
+  fastStart?: boolean;
 }) {
   if (!ttsWorker) throw new Error("TTS Worker not initialized");
   // A brand-new request supersedes any previous one still running (seek/restart).
@@ -472,6 +477,7 @@ function readerGenerate(params: {
       voiceFormula: params.voice,
       model: "model_q8f16",
       acceleration: TTS_ACCELERATION,
+      fastStart: params.fastStart === true,
     },
   });
 }

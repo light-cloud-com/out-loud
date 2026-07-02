@@ -346,7 +346,9 @@ async function preloadModel() {
         console.log("[Main] Requesting model preload...");
         ttsWorker.postMessage({
             type: "preload",
-            data: { model: "model_q8f16" },
+            // acceleration matches every generation call site so the prewarmed
+            // session is the one they reuse (no rebuild on first play).
+            data: { model: "model_q8f16", acceleration: TTS_ACCELERATION },
         });
     }
 }
@@ -388,6 +390,7 @@ function readerGenerate(params) {
             voiceFormula: params.voice,
             model: "model_q8f16",
             acceleration: TTS_ACCELERATION,
+            fastStart: params.fastStart === true,
         },
     });
 }
