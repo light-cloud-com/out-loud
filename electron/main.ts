@@ -195,6 +195,10 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: false,
       preload: preloadPath,
+      // Keep timers/rAF running while the window is hidden or covered: audio
+      // keeps playing in the background, so the progress UI must keep
+      // advancing too (otherwise the bar freezes until the user interacts).
+      backgroundThrottling: false,
     },
   });
 

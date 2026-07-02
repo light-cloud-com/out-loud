@@ -13,6 +13,11 @@ const MP3_KBPS = 192;
 // playback (backpressure). Download/export lifts this cap to generate fully.
 const AHEAD = 20;
 
+// Progress UI tick. A plain timer, NOT requestAnimationFrame: rAF stops firing
+// when the window is hidden/occluded while audio keeps playing in the
+// background, which froze the progress bar until the user interacted again.
+const PROGRESS_TICK_MS = 200;
+
 function formatTime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -64,7 +69,7 @@ export function useAudioPlayer(
   const lastPlayedTextRef = useRef("");
   const cachedAudioBuffersRef = useRef<AudioBuffer[]>([]);
   const cachedKeyRef = useRef("");
-  const animationFrameRef = useRef<number | null>(null);
+  const progressTimerRef = useRef<number | null>(null);
 
   // Refs for playback tracking (to avoid stale closures)
   const playbackStartTimeRef = useRef<number>(0);
@@ -103,9 +108,9 @@ export function useAudioPlayer(
       currentReqIdRef.current = null;
     }
     pendingExportRef.current = null;
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
+    if (progressTimerRef.current) {
+      clearTimeout(progressTimerRef.current);
+      progressTimerRef.current = null;
     }
     scheduledSourcesRef.current.forEach((s) => {
       try {
@@ -205,7 +210,7 @@ export function useAudioPlayer(
     }
 
     if (remaining > 0.05 || !allChunksReceivedRef.current) {
-      animationFrameRef.current = requestAnimationFrame(updatePlayback);
+      progressTimerRef.current = window.setTimeout(updatePlayback, PROGRESS_TICK_MS);
     } else {
       const finalDuration = scheduledEndTimeRef.current - playbackStartTimeRef.current;
       setState((s) => ({
@@ -239,7 +244,7 @@ export function useAudioPlayer(
     }));
 
     if (now < scheduledEndTimeRef.current - 0.05) {
-      animationFrameRef.current = requestAnimationFrame(updateCachedPlayback);
+      progressTimerRef.current = window.setTimeout(updateCachedPlayback, PROGRESS_TICK_MS);
     } else {
       setState((s) => ({
         ...s,
@@ -278,12 +283,13 @@ export function useAudioPlayer(
           } else {
             audioCtxRef.current.resume();
             setState((s) => ({ ...s, isPaused: false, info: "Playing..." }));
-            // Restart the animation frame
-            animationFrameRef.current = requestAnimationFrame(
+            // Restart the progress tick
+            progressTimerRef.current = window.setTimeout(
               cachedKeyRef.current === `${text}|${voice}|${language}` &&
                 allChunksReceivedRef.current
                 ? updateCachedPlayback
-                : updatePlayback
+                : updatePlayback,
+              PROGRESS_TICK_MS
             );
             return;
           }
@@ -295,9 +301,9 @@ export function useAudioPlayer(
           const wasCached =
             cachedKeyRef.current === `${text}|${voice}|${language}` && allChunksReceivedRef.current;
           audioCtxRef.current.suspend();
-          if (animationFrameRef.current) {
-            cancelAnimationFrame(animationFrameRef.current);
-            animationFrameRef.current = null;
+          if (progressTimerRef.current) {
+            clearTimeout(progressTimerRef.current);
+            progressTimerRef.current = null;
           }
           setState((s) => ({ ...s, isPaused: true, info: "Paused" }));
           track("quick_speak_paused", {
@@ -378,7 +384,7 @@ export function useAudioPlayer(
           allChunksReceivedRef.current = true;
           totalChunksRef.current = cachedAudioBuffersRef.current.length;
 
-          animationFrameRef.current = requestAnimationFrame(updateCachedPlayback);
+          progressTimerRef.current = window.setTimeout(updateCachedPlayback, PROGRESS_TICK_MS);
           return;
         } catch (e: unknown) {
           console.error("Cache playback error:", e);
@@ -441,7 +447,7 @@ export function useAudioPlayer(
             scheduledEndTimeRef.current = playbackStartTimeRef.current;
             if (!playbackTrackingStarted) {
               playbackTrackingStarted = true;
-              animationFrameRef.current = requestAnimationFrame(updatePlayback);
+              progressTimerRef.current = window.setTimeout(updatePlayback, PROGRESS_TICK_MS);
             }
           }
 
