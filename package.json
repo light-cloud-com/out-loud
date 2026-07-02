@@ -38,7 +38,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "knip": "knip",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run --passWithNoTests --exclude \"tests/**/*.integration.test.ts\"",
     "check": "npm run lint && npm run format:check && npm run knip && npm run electron:compile",
     "release": "node scripts/release.mjs",
     "prepare": "husky",
@@ -57,7 +57,8 @@
     "electron:build:linux": "npm run electron-ui:build && npm run electron:compile && electron-builder --linux --publish never -c.directories.output=releases/linux",
     "extension:chrome:pack": "mkdir -p releases/extensions && cd chrome-extension && zip -r ../releases/extensions/out-loud-chrome.zip . -x '*.DS_Store'",
     "extension:safari:convert": "mkdir -p releases/extensions && xcrun safari-web-extension-converter chrome-extension --project-location releases/extensions/safari --app-name 'Out Loud Extension' --bundle-identifier com.lightcloudlabs.outloud.extension --no-prompt",
-    "extension:test": "echo 'Testing extension API...' && curl -s http://127.0.0.1:51730/api/v1/audio/voices | head -c 200"
+    "extension:test": "echo 'Testing extension API...' && curl -s http://127.0.0.1:51730/api/v1/audio/voices | head -c 200",
+    "test:integration": "vitest run tests/"
   },
   "dependencies": {
     "espeak-ng": "1.0.2",
