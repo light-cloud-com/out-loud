@@ -184,23 +184,13 @@ export function useAudioPlayer(
       }
     }
 
-    // Calculate display duration with estimation during streaming
-    let displayDuration: number;
-    if (allChunksReceivedRef.current) {
-      // All chunks received - use actual duration
-      displayDuration = scheduledEndTimeRef.current - playbackStartTimeRef.current;
-    } else if (chunksReceivedRef.current > 0 && totalChunksRef.current > 0) {
-      // Estimate based on chunks received so far
-      const actualDuration = scheduledEndTimeRef.current - playbackStartTimeRef.current;
-      const avgChunkDuration = totalScheduledDurationRef.current / chunksReceivedRef.current;
-      const remainingChunks = totalChunksRef.current - chunksReceivedRef.current;
-      const chunkBasedEstimate = actualDuration + remainingChunks * avgChunkDuration;
-      const weight = chunksReceivedRef.current / totalChunksRef.current;
-      displayDuration = textBasedEstimateRef.current * (1 - weight) + chunkBasedEstimate * weight;
-    } else {
-      // No chunks yet - use text-based estimate
-      displayDuration = textBasedEstimateRef.current;
-    }
+    // Bar/label denominator: seconds elapsed against ONE fixed estimate made
+    // when playback started (text length / measured chars-per-second). No
+    // mid-playback re-estimation — the bar ticks steadily and is corrected to
+    // the real total only once all chunks have been generated.
+    const displayDuration = allChunksReceivedRef.current
+      ? scheduledEndTimeRef.current - playbackStartTimeRef.current
+      : textBasedEstimateRef.current;
 
     if (displayDuration > 0) {
       const pct = Math.min(100, (elapsed / displayDuration) * 100);
@@ -406,8 +396,10 @@ export function useAudioPlayer(
       lastSentTargetRef.current = -1;
       pendingExportRef.current = null;
 
-      // Set text-based estimate
-      const CHARS_PER_SECOND = 14;
+      // Set text-based estimate. 10.2 chars/s measured on real Kokoro output
+      // including punctuation pauses (1132 chars -> 111.2s of audio, af_heart);
+      // the old 14 made every estimate ~35% short.
+      const CHARS_PER_SECOND = 10.2;
       textBasedEstimateRef.current = text.trim().length / CHARS_PER_SECOND;
 
       setState((s) => ({
