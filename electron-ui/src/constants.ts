@@ -10,5 +10,4 @@ export const DEFAULT_SETTINGS = {
   volume: 80,
   highlightChunk: true,
   // Electron accelerator for the global "read selection aloud" hotkey.
-  readAloudShortcut: "Control+Alt+S",
 };

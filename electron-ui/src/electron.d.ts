@@ -4,7 +4,6 @@ interface SharedSettings {
   voice: string;
   volume: number;
   highlightChunk: boolean;
-  readAloudShortcut: string;
 }
 
 interface UpdateInfo {
@@ -55,7 +54,6 @@ interface ElectronAPI {
   onUpdateAvailable: (callback: (update: UpdateInfo | null) => void) => () => void;
   skipVersion: (version: string) => Promise<UpdateInfo | null>;
   onExternalSpeak: (callback: (payload: { text: string; source: string }) => void) => () => void;
-  setShortcutRecording: (recording: boolean) => void;
   openExternal: (url: string) => void;
   track: (name: string, properties?: Record<string, unknown>) => void;
   setSidebar: (open: boolean) => Promise<void>;

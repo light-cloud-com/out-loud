@@ -5,7 +5,6 @@ import { VolumeSlider } from "./components/VolumeSlider";
 import { PlaybackControls } from "./components/PlaybackControls";
 import { ProgressBar } from "./components/ProgressBar";
 import { SettingsCheckbox } from "./components/SettingsCheckbox";
-import { ShortcutRecorder } from "./components/ShortcutRecorder";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { AboutDialog } from "./components/AboutDialog";
 import { IdentityDialog } from "./components/IdentityDialog";
@@ -141,8 +140,8 @@ function App() {
     setText("");
   }, [text, settings.voice, settings.language, player, setText, lib]);
 
-  // Text captured by the global read-selection hotkey (works from any app, incl.
-  // Slack desktop): drop it into the editor and speak it immediately.
+  // Text captured by the macOS "Read out loud" Service: drop it into the
+  // editor and speak it immediately.
   useEffect(() => {
     const api = window.electronAPI;
     if (!api?.onExternalSpeak) return;
@@ -158,13 +157,13 @@ function App() {
         .replace(/\n{3,}/g, "\n\n")
         .trim();
       if (!t) return;
-      // Track reads triggered outside the app window (global hotkey / macOS
-      // "Read out loud" Service) so usage of the feature is visible.
+      // Track reads triggered outside the app window (macOS "Read out loud"
+      // Service) so usage of the feature is visible.
       track("quick_speak_initiated", {
         text_length_bucket: lengthBucket(t.length),
         language: settings.language,
         voice_id: settings.voice,
-        trigger_type: source === "service" ? "macos_service" : "global_shortcut",
+        trigger_type: source === "service" ? "macos_service" : "external",
       });
       setText(t);
       lib.addSession(t, settings.voice, settings.language);
@@ -389,10 +388,6 @@ function App() {
                 checked={settings.highlightChunk}
                 onChange={(checked) => updateSetting("highlightChunk", checked)}
               />
-              <ShortcutRecorder
-                value={settings.readAloudShortcut}
-                onChange={(acc) => updateSetting("readAloudShortcut", acc)}
-              />
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -427,7 +422,6 @@ function App() {
       <AboutDialog
         open={aboutOpen}
         version={version}
-        shortcut={settings.readAloudShortcut}
         onClose={() => setAboutOpen(false)}
         onOpen={open}
       />

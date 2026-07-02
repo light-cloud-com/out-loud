@@ -1,5 +1,4 @@
 import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, } from "electron";
-import { registerSelectionReader, unregisterSelectionReader, setSelectionShortcut, suspendSelectionReader, resumeSelectionReader, DEFAULT_READ_ALOUD_SHORTCUT, } from "./selection-reader.js";
 import { installMacService } from "./mac-service.js";
 import { Worker } from "worker_threads";
 import * as path from "path";
@@ -478,18 +477,12 @@ let sharedSettings = {
     voice: "af_heart",
     volume: 80,
     highlightChunk: false,
-    readAloudShortcut: DEFAULT_READ_ALOUD_SHORTCUT,
 };
 function getSharedSettings() {
     return { ...sharedSettings };
 }
 function updateSharedSettings(updates, options = {}) {
-    const prevShortcut = sharedSettings.readAloudShortcut;
     sharedSettings = { ...sharedSettings, ...updates };
-    // Re-register the global hotkey when the user changes it in Settings.
-    if (updates.readAloudShortcut && updates.readAloudShortcut !== prevShortcut) {
-        setSelectionShortcut(sharedSettings.readAloudShortcut);
-    }
     // Broadcast to the renderer ONLY when the change came from outside the
     // renderer (e.g. the Chrome extension via the HTTP API). Broadcasting
     // back to the same renderer that initiated an IPC update races with
@@ -951,14 +944,6 @@ ipcMain.on("tray:playing", (_event, playing) => {
         stopTrayAnimation();
     }
 });
-// While the user records a new read-aloud shortcut in Settings, release the
-// global hotkey so it neither fires nor swallows the keys being recorded.
-ipcMain.on("shortcut:recording", (_event, recording) => {
-    if (recording)
-        suspendSelectionReader();
-    else
-        resumeSelectionReader();
-});
 // ---- Update notice (GitHub latest release vs running version) ----
 // Current available-update info, or null when up to date.
 ipcMain.handle("update:get", async () => getUpdate());
@@ -1029,9 +1014,6 @@ app.whenReady().then(() => {
     createWindow();
     preloadModel();
     startUpdateChecks(() => mainWindow);
-    // Global hotkey to read the current selection aloud from any app (incl. the
-    // Slack desktop app, which can't host our own UI).
-    registerSelectionReader(() => mainWindow, sharedSettings.readAloudShortcut);
     // macOS only: install the "Read out loud" right-click Services entry, which
     // pipes the selection to the local /api/v1/speak endpoint. Not available in
     // MAS builds (no localhost server there).
@@ -1049,9 +1031,6 @@ app.whenReady().then(() => {
 });
 app.on("window-all-closed", () => {
     // Don't quit - keep running in tray
-});
-app.on("will-quit", () => {
-    unregisterSelectionReader();
 });
 // Guards against a second before-quit re-entering teardown (e.g. the user
 // clicking Quit again during the brief telemetry-flush window before app.exit).
