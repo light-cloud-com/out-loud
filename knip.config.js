@@ -16,6 +16,7 @@ export default {
         "electron/tts-worker.ts",
         "electron/shared-audio.ts",
         "electron/phoneme-split.ts",
+        "electron/mac-service.ts",
         // main.ts imports these via their compiled ".js" specifier (required by
         // Node ESM at runtime). The compiled .js is committed, so knip's
         // resolver follows the import to the .js and would otherwise flag the
