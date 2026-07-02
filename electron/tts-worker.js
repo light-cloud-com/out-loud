@@ -118,6 +118,23 @@ console.log("[TTS Worker] MODELS_DIR:", MODELS_DIR);
 // Keep ONNX session alive between requests for performance
 let cachedSession = null;
 let cachedModelId = null;
+// In-flight session.run promises. Shutdown must let these settle before the
+// session is released: releasing mid-run (or running post-release) throws a
+// native Napi::Error, which aborts the whole Electron process — the
+// "quit while audio is playing" SIGABRT.
+const inFlightRuns = new Set();
+async function runInference(session, feeds) {
+    if (isShuttingDown)
+        throw new Error("Generation aborted");
+    const run = session.run(feeds);
+    inFlightRuns.add(run);
+    try {
+        return await run;
+    }
+    finally {
+        inFlightRuns.delete(run);
+    }
+}
 // Current request ID for progress messages
 let currentRequestId = null;
 // Shutdown flag to abort ongoing work
@@ -603,7 +620,7 @@ async function generateVoice(params) {
             ]);
             const style = new ort.Tensor("float32", new Float32Array(ref_s), [1, ref_s.length]);
             const speed = new ort.Tensor("float32", [1], [1]);
-            const result = await session.run({ input_ids, style, speed });
+            const result = await runInference(session, { input_ids, style, speed });
             parts.push(trimWaveform(result.waveform.data));
         }
         if (parts.length === 0)
@@ -680,6 +697,13 @@ async function generateVoice(params) {
                 yieldReadyChunks();
                 // Fill look-ahead with more work
                 fillLookAhead();
+            }, 
+            // The drive loop sees the rejection via Promise.race on the same base
+            // promise; this handler only keeps the derived promise from becoming
+            // an unhandled rejection (which would crash the worker).
+            () => {
+                inFlight.delete(chunkIdx);
+                wakeGen();
             });
         }
     };
@@ -837,7 +861,7 @@ async function generateUnitsToStream(params, emit, isAborted) {
         ]);
         const style = new ort.Tensor("float32", new Float32Array(ref_s), [1, ref_s.length]);
         const speed = new ort.Tensor("float32", [1], [1]);
-        const result = await session.run({ input_ids, style, speed });
+        const result = await runInference(session, { input_ids, style, speed });
         let waveform = result.waveform.data;
         waveform = trimWaveform(waveform);
         return { index: idx, waveform };
@@ -875,6 +899,13 @@ async function generateUnitsToStream(params, emit, isAborted) {
                 wakeProducer(); // inference advanced; the producer may prep further ahead
                 if (!isAborted())
                     fill();
+            }, 
+            // The drive loop sees the rejection via Promise.race on the same base
+            // promise; this handler only keeps the derived promise from becoming
+            // an unhandled rejection (which would crash the worker).
+            () => {
+                inFlight.delete(idx);
+                wakeProducer();
             });
         }
         wakeProducer(); // nextToStart advanced; unblock a parked producer
@@ -884,22 +915,28 @@ async function generateUnitsToStream(params, emit, isAborted) {
     // startable, the producer only parks when it is PREP_AHEAD chunks ahead), so
     // this cannot deadlock; abort wakes both via the finally/wake calls below.
     const prepPromise = prepare();
-    while (!isAborted()) {
-        fill();
-        if (inFlight.size > 0) {
-            await Promise.race(inFlight.values());
-        }
-        else if (!prepDone) {
-            await new Promise((resolve) => {
-                wakeConsumerFn = resolve;
-            });
-        }
-        else if (nextToStart >= prepared.length) {
-            break; // nothing in flight, nothing startable, nothing more coming
+    try {
+        while (!isAborted()) {
+            fill();
+            if (inFlight.size > 0) {
+                await Promise.race(inFlight.values());
+            }
+            else if (!prepDone) {
+                await new Promise((resolve) => {
+                    wakeConsumerFn = resolve;
+                });
+            }
+            else if (nextToStart >= prepared.length) {
+                break; // nothing in flight, nothing startable, nothing more coming
+            }
         }
     }
-    wakeProducer(); // in case we exited on abort while the producer was parked
-    await prepPromise;
+    finally {
+        // Even when a chunk rejects (e.g. shutdown mid-inference), unpark the
+        // producer and wait for it so no promise is left dangling in the worker.
+        wakeProducer();
+        await prepPromise.catch(() => { });
+    }
     if (isAborted())
         return;
     yieldReady();
@@ -908,6 +945,13 @@ async function generateUnitsToStream(params, emit, isAborted) {
 // Cleanup function for graceful shutdown
 async function cleanup() {
     console.log("[Worker] Cleaning up...");
+    // Let in-flight inference settle before releasing the session (releasing
+    // mid-run aborts the process with a native Napi::Error). isShuttingDown is
+    // already set, so no NEW runs start; bound the wait in case a run hangs.
+    const deadline = Date.now() + 10_000;
+    while (inFlightRuns.size > 0 && Date.now() < deadline) {
+        await Promise.allSettled([...inFlightRuns]);
+    }
     // Release ONNX session (Kokoro)
     if (cachedSession) {
         try {

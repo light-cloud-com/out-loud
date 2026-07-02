@@ -155,3 +155,37 @@ describe("tts-worker pipeline behavior", () => {
     expect(emptyDoneIdx).toBeGreaterThan(firstChunkIdx);
   }, 150_000);
 });
+
+describe("tts-worker shutdown safety", () => {
+  it("shuts down mid-generation without touching a disposed session", async () => {
+    // The quit-while-playing crash: cleanup() released the ONNX session while
+    // the generation loop still used it ("Session already disposed" here; a
+    // fatal Napi::Error -> SIGABRT inside Electron). Shutdown must let
+    // in-flight inference settle before releasing.
+    const w = new Worker(WORKER_PATH, { stderr: true });
+    workers.push(w);
+    let stderr = "";
+    w.stderr!.on("data", (d) => (stderr += String(d)));
+    w.postMessage({
+      type: "generateUnits",
+      requestId: "shutdown-test",
+      data: {
+        units: SHORT_SENTENCES.map((text, i) => ({ id: `u${i}`, text })),
+        lang: "en-us",
+        voiceFormula: "af_heart",
+        model: "model_q8f16",
+        acceleration: "cpu",
+      },
+    });
+    // Wait for the first audio chunk so we know an inference pipeline is hot.
+    await collectUntil(w, (m) => m.type === "unitChunk", 30_000);
+    // Request shutdown mid-generation: the worker must settle in-flight
+    // inference, release the session, and reply — without crashing.
+    const done = collectUntil(w, (m) => m.type === "shutdown_complete", 20_000);
+    w.postMessage({ type: "shutdown" });
+    const messages = await done;
+    await new Promise((r) => setTimeout(r, 300)); // let trailing stderr flush
+    expect(messages.some((m) => m.type === "shutdown_complete")).toBe(true);
+    expect(stderr).not.toMatch(/Session already disposed|Napi::Error/);
+  }, 60_000);
+});

@@ -1086,16 +1086,41 @@ app.on("before-quit", (event) => {
         ttsWorker.postMessage({ type: "cancel", requestId: activeQuickSpeakRequest });
         activeQuickSpeakRequest = null;
     }
+    // Ask the worker to shut down gracefully: it refuses new inference, lets the
+    // in-flight session.run settle, and releases the ONNX session. Exiting while
+    // a run is in flight aborts the process with a native Napi::Error (the
+    // "quit while audio is playing" SIGABRT) — app.exit() alone does NOT avoid
+    // it on current Electron. Bounded below so quit can never hang.
+    const workerShutdown = ttsWorker
+        ? new Promise((resolve) => {
+            const onMsg = (msg) => {
+                if (msg?.type === "shutdown_complete") {
+                    ttsWorker?.off("message", onMsg);
+                    resolve();
+                }
+            };
+            ttsWorker.on("message", onMsg);
+            ttsWorker.postMessage({ type: "shutdown" });
+        })
+        : Promise.resolve();
+    const workerShutdownBounded = Promise.race([
+        workerShutdown,
+        new Promise((resolve) => setTimeout(resolve, 12_000)),
+    ]);
     for (const [, pending] of pendingRequests) {
         pending.reject(new Error("App is shutting down"));
     }
     pendingRequests.clear();
-    // Give telemetry a brief, bounded window to flush session_ended (it persists
-    // to disk first, so anything unsent is delivered on the next launch), then
-    // hard-exit. shutdownTelemetry always resolves, so quit never hangs.
-    shutdownTelemetry({
-        tts_requests: ttsRequestsThisSession,
-        docs_opened: docsOpenedThisSession,
-    }).finally(() => app.exit(0));
+    // Exit once BOTH the worker has quiesced and telemetry has had its brief,
+    // bounded flush window (session_ended persists to disk first, so anything
+    // unsent is delivered on the next launch). Both promises are bounded, so
+    // quit can never hang.
+    Promise.allSettled([
+        workerShutdownBounded,
+        shutdownTelemetry({
+            tts_requests: ttsRequestsThisSession,
+            docs_opened: docsOpenedThisSession,
+        }),
+    ]).then(() => app.exit(0));
 });
 //# sourceMappingURL=main.js.map
