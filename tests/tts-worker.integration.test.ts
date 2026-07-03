@@ -189,3 +189,59 @@ describe("tts-worker shutdown safety", () => {
     expect(stderr).not.toMatch(/Session already disposed|Napi::Error/);
   }, 60_000);
 });
+
+describe("tts-worker provider reporting & acceleration cache", () => {
+  it("preloadComplete reports the session's execution providers", async () => {
+    const w = startWorker();
+    const done = collectUntil(w, (m) => m.type === "preloadComplete", 20_000);
+    w.postMessage({
+      type: "preload",
+      data: { model: "model_q8f16", acceleration: "cpu" },
+    });
+    const messages = await done;
+    const reply = messages.find((m) => m.type === "preloadComplete");
+    expect(reply.data.providers).toEqual(["cpu"]);
+  }, 30_000);
+
+  it("rebuilds the session when the acceleration mode changes (sessionInfo per build)", async () => {
+    const w = startWorker();
+    const mk = (rid: string, acceleration: string) => ({
+      type: "generateUnits",
+      requestId: rid,
+      data: {
+        units: [{ id: "u0", text: "The keeper lit the lamp." }],
+        lang: "en-us",
+        voiceFormula: "af_heart",
+        model: "model_q8f16",
+        acceleration,
+      },
+    });
+    // First generation on CPU -> one sessionInfo for the cpu session.
+    const first = collectUntil(w, (m) => m.type === "genComplete", 60_000);
+    w.postMessage(mk("accel-1", "cpu"));
+    const firstMsgs = await first;
+    const cpuInfos = firstMsgs.filter((m) => m.type === "sessionInfo");
+    expect(cpuInfos.length).toBe(1);
+    expect(cpuInfos[0].data.requested).toEqual(["cpu"]);
+    expect(cpuInfos[0].data.effective).toEqual(["cpu"]);
+
+    // Same model, different acceleration -> the cache must NOT serve the cpu
+    // session; new sessionInfo message(s) report what was requested vs what
+    // stuck. Whether CoreML initializes / survives inference for this model is
+    // ORT-version-dependent: if it dies at run time, the worker must rebuild
+    // CPU-only (an extra sessionInfo with fallback: true), retry, and still
+    // deliver audio.
+    const second = collectUntil(w, (m) => m.type === "genComplete", 120_000);
+    w.postMessage(mk("accel-2", "coreml"));
+    const secondMsgs = await second;
+    const newInfos = secondMsgs.filter((m) => m.type === "sessionInfo");
+    expect(newInfos.length).toBeGreaterThanOrEqual(1);
+    expect(newInfos[0].data.requested).toContain("coreml");
+    const last = newInfos[newInfos.length - 1];
+    if (newInfos.some((m) => m.data.fallback)) {
+      expect(last.data.effective).toEqual(["cpu"]);
+    }
+    // Whatever path it took, the generation must still produce audio.
+    expect(secondMsgs.some((m) => m.type === "unitChunk")).toBe(true);
+  }, 180_000);
+});

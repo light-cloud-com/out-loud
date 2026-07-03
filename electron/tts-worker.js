@@ -65,9 +65,11 @@ const LOOK_AHEAD_SIZES = {
 // (discovered at runtime below), so this list can stay aspirational — a new EP
 // lights up automatically wherever the binary supports it.
 const GPU_EP_PRIORITY = ["coreml", "dml", "cuda", "webgpu"];
-// Which GPU EPs are actually bundled in this binary. onnxruntime-node ships CPU
-// everywhere and CoreML on macOS; Windows/Linux GPU builds add dml/cuda. Empty
-// on a CPU-only binary, so we silently stay on CPU there.
+// Which GPU EPs are actually bundled in this binary. onnxruntime-node prebuilts
+// register: cpu everywhere; coreml + webgpu on macOS; dml (DirectML.dll is
+// bundled) + webgpu on Windows; cuda on Linux x64 (provider libs NOT bundled,
+// so requesting it fails at create). We only try what listSupportedBackends
+// reports, and CPU is always the final fallback.
 function availableGpuProviders() {
     try {
         const backends = ort.listSupportedBackends?.() ?? [];
@@ -91,22 +93,24 @@ function providersFor(acceleration) {
 // Create a session, hard-falling-back to CPU-only if the GPU EP can't
 // initialise (missing framework, model it can't compile, etc.). The EP list
 // already lets ORT partition unsupported ops to CPU; this catch handles the
-// harder case where the whole GPU EP fails to start.
+// harder case where the whole GPU EP fails to start. Returns the provider
+// list the session was ACTUALLY created with, so callers can report it.
 async function createSessionWithFallback(modelBuffer, providers) {
     try {
         const session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
             executionProviders: providers,
         });
         console.log(`[TTS Worker] ONNX session providers: ${providers.join(", ")}`);
-        return session;
+        return { session, effective: providers };
     }
     catch (err) {
         if (providers.length === 1)
             throw err; // already CPU-only — nothing to fall back to
         console.warn(`[TTS Worker] EP [${providers.join(", ")}] failed (${err instanceof Error ? err.message : String(err)}); falling back to CPU`);
-        return ort.InferenceSession.create(Buffer.from(modelBuffer), {
+        const session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
             executionProviders: ["cpu"],
         });
+        return { session, effective: ["cpu"] };
     }
 }
 // Models directory - embedded in the app, asarUnpack'd by electron-builder.
@@ -115,24 +119,80 @@ const isPackaged = __dirname.includes("app.asar");
 console.log("[TTS Worker] __dirname:", __dirname);
 console.log("[TTS Worker] isPackaged:", isPackaged);
 console.log("[TTS Worker] MODELS_DIR:", MODELS_DIR);
-// Keep ONNX session alive between requests for performance
+// Keep ONNX session alive between requests for performance. The cache is
+// keyed by (model, resolved provider list) so changing the acceleration mode
+// actually rebuilds the session instead of silently reusing the old one.
 let cachedSession = null;
 let cachedModelId = null;
+let cachedProvidersKey = null;
+let cachedEffective = [];
+// Provider lists that failed AT RUN TIME (not create) in this worker's
+// lifetime — e.g. DirectML initializes on the stock model but dies inside
+// session.run. Latched to CPU so we don't pay a failed run + session rebuild
+// on every subsequent generation; a worker restart retries the GPU.
+const runtimeFailedProviderKeys = new Set();
 // In-flight session.run promises. Shutdown must let these settle before the
 // session is released: releasing mid-run (or running post-release) throws a
 // native Napi::Error, which aborts the whole Electron process — the
 // "quit while audio is playing" SIGABRT.
 const inFlightRuns = new Set();
-async function runInference(session, feeds) {
+async function runInference(feeds) {
     if (isShuttingDown)
         throw new Error("Generation aborted");
-    const run = session.run(feeds);
+    if (!cachedSession)
+        throw new Error("No ONNX session");
+    let run = cachedSession.run(feeds);
     inFlightRuns.add(run);
     try {
-        return await run;
+        try {
+            return await run;
+        }
+        catch (err) {
+            // Run-time EP failure — a GPU provider that initialized fine but died
+            // inside session.run (DirectML does this on unsupported ops/shapes).
+            // Rebuild CPU-only once and retry this inference; latch so later
+            // generations skip the broken provider entirely.
+            inFlightRuns.delete(run);
+            const wasCpuOnly = cachedEffective.length === 1 && cachedEffective[0] === "cpu";
+            if (isShuttingDown || wasCpuOnly)
+                throw err;
+            console.warn(`[TTS Worker] inference failed on [${cachedEffective.join(", ")}] (${err instanceof Error ? err.message : String(err)}); rebuilding CPU-only and retrying`);
+            await rebuildSessionCpuOnly();
+            run = cachedSession.run(feeds);
+            inFlightRuns.add(run);
+            return await run;
+        }
     }
     finally {
         inFlightRuns.delete(run);
+    }
+}
+// Swap the cached session for a CPU-only one after a run-time provider
+// failure. Latches the failed provider list for this worker's lifetime and
+// reports the change over IPC.
+async function rebuildSessionCpuOnly() {
+    if (!cachedModelId)
+        throw new Error("No model to rebuild");
+    if (cachedProvidersKey)
+        runtimeFailedProviderKeys.add(cachedProvidersKey);
+    const old = cachedSession;
+    const modelBuffer = await getModel(cachedModelId);
+    const { session, effective } = await createSessionWithFallback(modelBuffer, ["cpu"]);
+    cachedSession = session;
+    cachedProvidersKey = "cpu";
+    cachedEffective = effective;
+    parentPort?.postMessage({
+        type: "sessionInfo",
+        data: { model: cachedModelId, requested: ["cpu"], effective, fallback: true },
+    });
+    // Release the failed session only when nothing is mid-run on it.
+    if (old && inFlightRuns.size === 0) {
+        try {
+            await old.release();
+        }
+        catch {
+            /* best effort */
+        }
     }
 }
 // Current request ID for progress messages
@@ -533,12 +593,34 @@ function trimWaveform(waveform) {
 // Get or create the ONNX session, reusing the module-level cache (shared with
 // generateVoice) when the model matches.
 async function ensureSession(model, acceleration) {
-    if (cachedSession && cachedModelId === model)
+    const requested = providersFor(acceleration);
+    const key = requested.join(",");
+    // A provider list that already failed at run time resolves straight to CPU.
+    const effectiveRequested = runtimeFailedProviderKeys.has(key) ? ["cpu"] : requested;
+    const effectiveKey = effectiveRequested.join(",");
+    if (cachedSession && cachedModelId === model && cachedProvidersKey === effectiveKey) {
         return cachedSession;
+    }
+    const old = cachedSession;
     const modelBuffer = await getModel(model);
-    const session = await createSessionWithFallback(modelBuffer, providersFor(acceleration));
+    const { session, effective } = await createSessionWithFallback(modelBuffer, effectiveRequested);
     cachedSession = session;
     cachedModelId = model;
+    cachedProvidersKey = effectiveKey;
+    cachedEffective = effective;
+    parentPort?.postMessage({
+        type: "sessionInfo",
+        data: { model, requested: effectiveRequested, effective },
+    });
+    // Release the replaced session only when nothing is mid-run on it.
+    if (old && inFlightRuns.size === 0) {
+        try {
+            await old.release();
+        }
+        catch {
+            /* best effort */
+        }
+    }
     return session;
 }
 function buildUnits(text) {
@@ -581,7 +663,7 @@ async function generateVoice(params) {
     // Split into units up front (cheap regex only); phonemize lazily while streaming.
     const units = buildUnits(params.text);
     // Get or create ONNX session (shared cache; GPU EP with CPU fallback).
-    const session = await ensureSession(params.model, params.acceleration);
+    await ensureSession(params.model, params.acceleration);
     const voices = parseVoiceFormula(params.voiceFormula);
     const combinedVoice = await combineVoices(voices);
     const lookAhead = LOOK_AHEAD_SIZES[params.acceleration] || 3;
@@ -620,7 +702,7 @@ async function generateVoice(params) {
             ]);
             const style = new ort.Tensor("float32", new Float32Array(ref_s), [1, ref_s.length]);
             const speed = new ort.Tensor("float32", [1], [1]);
-            const result = await runInference(session, { input_ids, style, speed });
+            const result = await runInference({ input_ids, style, speed });
             parts.push(trimWaveform(result.waveform.data));
         }
         if (parts.length === 0)
@@ -739,7 +821,7 @@ async function generateVoice(params) {
 }
 async function generateUnitsToStream(params, emit, isAborted) {
     const tokensPerChunk = MODEL_CONTEXT_WINDOW - 2;
-    const session = await ensureSession(params.model, params.acceleration);
+    await ensureSession(params.model, params.acceleration);
     const combinedVoice = await combineVoices(parseVoiceFormula(params.voiceFormula));
     const lookAhead = LOOK_AHEAD_SIZES[params.acceleration] || 1;
     // ---- Lazy, bounded preparation (producer) ----
@@ -861,7 +943,7 @@ async function generateUnitsToStream(params, emit, isAborted) {
         ]);
         const style = new ort.Tensor("float32", new Float32Array(ref_s), [1, ref_s.length]);
         const speed = new ort.Tensor("float32", [1], [1]);
-        const result = await runInference(session, { input_ids, style, speed });
+        const result = await runInference({ input_ids, style, speed });
         let waveform = result.waveform.data;
         waveform = trimWaveform(waveform);
         return { index: idx, waveform };
@@ -991,7 +1073,7 @@ parentPort?.on("message", async (message) => {
         }
         parentPort?.postMessage({
             type: "preloadComplete",
-            data: { sessionReady: cachedSession !== null },
+            data: { sessionReady: cachedSession !== null, providers: cachedEffective },
         });
         return;
     }

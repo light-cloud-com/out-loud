@@ -345,6 +345,21 @@ function createTTSWorker() {
       return;
     }
 
+    // Session lifecycle: which execution providers were requested vs actually
+    // used (fallback=true when a run-time GPU failure forced a CPU rebuild).
+    // The go/no-go data for any future GPU work.
+    if (type === "sessionInfo") {
+      console.log(
+        `[TTS] session for ${data?.model}: requested [${(data?.requested ?? []).join(", ")}] → effective [${(data?.effective ?? []).join(", ")}]${data?.fallback ? " (run-time fallback)" : ""}`
+      );
+      track("tts_session_created", {
+        requested: (data?.requested ?? []).join(","),
+        effective: (data?.effective ?? []).join(","),
+        runtime_fallback: data?.fallback === true,
+      });
+      return;
+    }
+
     if (type === "progress") {
       mainWindow?.webContents.send("tts:progress", data);
       const pending = pendingRequests.get(requestId);
