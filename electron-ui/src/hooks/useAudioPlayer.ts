@@ -402,10 +402,11 @@ export function useAudioPlayer(
       lastSentTargetRef.current = -1;
       pendingExportRef.current = null;
 
-      // Set text-based estimate. 10.2 chars/s measured on real Kokoro output
-      // including punctuation pauses (1132 chars -> 111.2s of audio, af_heart);
-      // the old 14 made every estimate ~35% short.
-      const CHARS_PER_SECOND = 10.2;
+      // Set text-based estimate. ~19 chars/s measured on real Kokoro output
+      // including punctuation pauses (1132 chars -> 55.6s, 2203 chars ->
+      // 120.4s, af_heart; the worker's chunk WAVs are float32 — 4 bytes per
+      // sample — which an earlier measurement got wrong by 2x).
+      const CHARS_PER_SECOND = 19;
       textBasedEstimateRef.current = text.trim().length / CHARS_PER_SECOND;
 
       setState((s) => ({
