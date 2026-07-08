@@ -101,6 +101,9 @@ declare global {
     requestId: string;
     units: { id: string; text: string }[];
     voice: string;
+    /** Playback buffer is empty (play/seek): worker carves a small first
+     *  chunk for fast first audio. Leave unset on refill batches. */
+    fastStart?: boolean;
   }
 
   interface ReaderApi {

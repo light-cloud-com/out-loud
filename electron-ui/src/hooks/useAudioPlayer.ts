@@ -13,6 +13,11 @@ const MP3_KBPS = 192;
 // playback (backpressure). Download/export lifts this cap to generate fully.
 const AHEAD = 20;
 
+// Progress UI tick. A plain timer, NOT requestAnimationFrame: rAF stops firing
+// when the window is hidden/occluded while audio keeps playing in the
+// background, which froze the progress bar until the user interacted again.
+const PROGRESS_TICK_MS = 200;
+
 function formatTime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -67,7 +72,7 @@ export function useAudioPlayer(
   const lastPlayedKeyRef = useRef("");
   const cachedAudioBuffersRef = useRef<AudioBuffer[]>([]);
   const cachedKeyRef = useRef("");
-  const animationFrameRef = useRef<number | null>(null);
+  const progressTimerRef = useRef<number | null>(null);
 
   // Refs for playback tracking (to avoid stale closures)
   const playbackStartTimeRef = useRef<number>(0);
@@ -106,9 +111,9 @@ export function useAudioPlayer(
       currentReqIdRef.current = null;
     }
     pendingExportRef.current = null;
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
+    if (progressTimerRef.current) {
+      clearTimeout(progressTimerRef.current);
+      progressTimerRef.current = null;
     }
     scheduledSourcesRef.current.forEach((s) => {
       try {
@@ -187,23 +192,13 @@ export function useAudioPlayer(
       }
     }
 
-    // Calculate display duration with estimation during streaming
-    let displayDuration: number;
-    if (allChunksReceivedRef.current) {
-      // All chunks received - use actual duration
-      displayDuration = scheduledEndTimeRef.current - playbackStartTimeRef.current;
-    } else if (chunksReceivedRef.current > 0 && totalChunksRef.current > 0) {
-      // Estimate based on chunks received so far
-      const actualDuration = scheduledEndTimeRef.current - playbackStartTimeRef.current;
-      const avgChunkDuration = totalScheduledDurationRef.current / chunksReceivedRef.current;
-      const remainingChunks = totalChunksRef.current - chunksReceivedRef.current;
-      const chunkBasedEstimate = actualDuration + remainingChunks * avgChunkDuration;
-      const weight = chunksReceivedRef.current / totalChunksRef.current;
-      displayDuration = textBasedEstimateRef.current * (1 - weight) + chunkBasedEstimate * weight;
-    } else {
-      // No chunks yet - use text-based estimate
-      displayDuration = textBasedEstimateRef.current;
-    }
+    // Bar/label denominator: seconds elapsed against ONE fixed estimate made
+    // when playback started (text length / measured chars-per-second). No
+    // mid-playback re-estimation — the bar ticks steadily and is corrected to
+    // the real total only once all chunks have been generated.
+    const displayDuration = allChunksReceivedRef.current
+      ? scheduledEndTimeRef.current - playbackStartTimeRef.current
+      : textBasedEstimateRef.current;
 
     if (displayDuration > 0) {
       const pct = Math.min(100, (elapsed / displayDuration) * 100);
@@ -218,7 +213,7 @@ export function useAudioPlayer(
     }
 
     if (remaining > 0.05 || !allChunksReceivedRef.current) {
-      animationFrameRef.current = requestAnimationFrame(updatePlayback);
+      progressTimerRef.current = window.setTimeout(updatePlayback, PROGRESS_TICK_MS);
     } else {
       const finalDuration = scheduledEndTimeRef.current - playbackStartTimeRef.current;
       setState((s) => ({
@@ -252,7 +247,7 @@ export function useAudioPlayer(
     }));
 
     if (now < scheduledEndTimeRef.current - 0.05) {
-      animationFrameRef.current = requestAnimationFrame(updateCachedPlayback);
+      progressTimerRef.current = window.setTimeout(updateCachedPlayback, PROGRESS_TICK_MS);
     } else {
       setState((s) => ({
         ...s,
@@ -291,12 +286,13 @@ export function useAudioPlayer(
           } else {
             audioCtxRef.current.resume();
             setState((s) => ({ ...s, isPaused: false, info: "Playing..." }));
-            // Restart the animation frame
-            animationFrameRef.current = requestAnimationFrame(
+            // Restart the progress tick
+            progressTimerRef.current = window.setTimeout(
               cachedKeyRef.current === `${text}|${voice}|${language}` &&
                 allChunksReceivedRef.current
                 ? updateCachedPlayback
-                : updatePlayback
+                : updatePlayback,
+              PROGRESS_TICK_MS
             );
             return;
           }
@@ -308,9 +304,9 @@ export function useAudioPlayer(
           const wasCached =
             cachedKeyRef.current === `${text}|${voice}|${language}` && allChunksReceivedRef.current;
           audioCtxRef.current.suspend();
-          if (animationFrameRef.current) {
-            cancelAnimationFrame(animationFrameRef.current);
-            animationFrameRef.current = null;
+          if (progressTimerRef.current) {
+            clearTimeout(progressTimerRef.current);
+            progressTimerRef.current = null;
           }
           setState((s) => ({ ...s, isPaused: true, info: "Paused" }));
           track("quick_speak_paused", {
@@ -391,7 +387,7 @@ export function useAudioPlayer(
           allChunksReceivedRef.current = true;
           totalChunksRef.current = cachedAudioBuffersRef.current.length;
 
-          animationFrameRef.current = requestAnimationFrame(updateCachedPlayback);
+          progressTimerRef.current = window.setTimeout(updateCachedPlayback, PROGRESS_TICK_MS);
           return;
         } catch (e: unknown) {
           console.error("Cache playback error:", e);
@@ -409,8 +405,11 @@ export function useAudioPlayer(
       lastSentTargetRef.current = -1;
       pendingExportRef.current = null;
 
-      // Set text-based estimate
-      const CHARS_PER_SECOND = 14;
+      // Set text-based estimate. ~19 chars/s measured on real Kokoro output
+      // including punctuation pauses (1132 chars -> 55.6s, 2203 chars ->
+      // 120.4s, af_heart; the worker's chunk WAVs are float32 — 4 bytes per
+      // sample — which an earlier measurement got wrong by 2x).
+      const CHARS_PER_SECOND = 19;
       textBasedEstimateRef.current = text.trim().length / CHARS_PER_SECOND;
 
       setState((s) => ({
@@ -452,7 +451,7 @@ export function useAudioPlayer(
             scheduledEndTimeRef.current = playbackStartTimeRef.current;
             if (!playbackTrackingStarted) {
               playbackTrackingStarted = true;
-              animationFrameRef.current = requestAnimationFrame(updatePlayback);
+              progressTimerRef.current = window.setTimeout(updatePlayback, PROGRESS_TICK_MS);
             }
           }
 

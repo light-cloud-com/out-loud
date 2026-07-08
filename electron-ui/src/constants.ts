@@ -9,4 +9,5 @@ export const DEFAULT_SETTINGS = {
   voice: "af_heart",
   volume: 80,
   highlightChunk: true,
+  // Electron accelerator for the global "read selection aloud" hotkey.
 };

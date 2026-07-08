@@ -9,6 +9,7 @@ import ffmpegPath from "ffmpeg-static";
 // @ts-ignore
 import ESpeakNg from "espeak-ng";
 import { createWavBuffer } from "./shared-audio.js";
+import { splitLeadingPhonemes } from "./phoneme-split.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // Resolve a path that may live inside app.asar to its real on-disk location
@@ -44,20 +45,31 @@ else {
 }
 const MODEL_CONTEXT_WINDOW = 512;
 const SAMPLE_RATE = 24000;
-// Look-ahead sizes per acceleration mode for streaming processing
+// fastStart: phoneme budget for the carved-off first chunk of a generation.
+// ~48 phonemes is ~8-10 words: enough audio (~2-3s) to cover the next
+// inference, small enough to synthesize in well under half the time of a full
+// sentence.
+const FIRST_CHUNK_PHONEMES = 48;
+// Max concurrent inferences per acceleration mode. Measured on the CPU EP
+// (M1, q8f16): one session.run already saturates the ONNX thread pool, so
+// extra in-flight inferences add ZERO throughput while tripling per-chunk
+// latency and starving espeak phonemization of cores. Keep 1 for CPU-backed
+// modes; revisit per-EP if a real GPU provider lands.
 const LOOK_AHEAD_SIZES = {
-    cpu: 4,
-    coreml: 3,
-    auto: 3,
+    cpu: 1,
+    coreml: 1,
+    auto: 1,
 };
 // GPU execution providers we know how to use, in preference order. We only
 // actually try the ones the installed onnxruntime-node binary was built with
 // (discovered at runtime below), so this list can stay aspirational — a new EP
 // lights up automatically wherever the binary supports it.
 const GPU_EP_PRIORITY = ["coreml", "dml", "cuda", "webgpu"];
-// Which GPU EPs are actually bundled in this binary. onnxruntime-node ships CPU
-// everywhere and CoreML on macOS; Windows/Linux GPU builds add dml/cuda. Empty
-// on a CPU-only binary, so we silently stay on CPU there.
+// Which GPU EPs are actually bundled in this binary. onnxruntime-node prebuilts
+// register: cpu everywhere; coreml + webgpu on macOS; dml (DirectML.dll is
+// bundled) + webgpu on Windows; cuda on Linux x64 (provider libs NOT bundled,
+// so requesting it fails at create). We only try what listSupportedBackends
+// reports, and CPU is always the final fallback.
 function availableGpuProviders() {
     try {
         const backends = ort.listSupportedBackends?.() ?? [];
@@ -81,22 +93,24 @@ function providersFor(acceleration) {
 // Create a session, hard-falling-back to CPU-only if the GPU EP can't
 // initialise (missing framework, model it can't compile, etc.). The EP list
 // already lets ORT partition unsupported ops to CPU; this catch handles the
-// harder case where the whole GPU EP fails to start.
+// harder case where the whole GPU EP fails to start. Returns the provider
+// list the session was ACTUALLY created with, so callers can report it.
 async function createSessionWithFallback(modelBuffer, providers) {
     try {
         const session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
             executionProviders: providers,
         });
         console.log(`[TTS Worker] ONNX session providers: ${providers.join(", ")}`);
-        return session;
+        return { session, effective: providers };
     }
     catch (err) {
         if (providers.length === 1)
             throw err; // already CPU-only — nothing to fall back to
         console.warn(`[TTS Worker] EP [${providers.join(", ")}] failed (${err instanceof Error ? err.message : String(err)}); falling back to CPU`);
-        return ort.InferenceSession.create(Buffer.from(modelBuffer), {
+        const session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
             executionProviders: ["cpu"],
         });
+        return { session, effective: ["cpu"] };
     }
 }
 // Models directory - embedded in the app, asarUnpack'd by electron-builder.
@@ -105,9 +119,82 @@ const isPackaged = __dirname.includes("app.asar");
 console.log("[TTS Worker] __dirname:", __dirname);
 console.log("[TTS Worker] isPackaged:", isPackaged);
 console.log("[TTS Worker] MODELS_DIR:", MODELS_DIR);
-// Keep ONNX session alive between requests for performance
+// Keep ONNX session alive between requests for performance. The cache is
+// keyed by (model, resolved provider list) so changing the acceleration mode
+// actually rebuilds the session instead of silently reusing the old one.
 let cachedSession = null;
 let cachedModelId = null;
+let cachedProvidersKey = null;
+let cachedEffective = [];
+// Provider lists that failed AT RUN TIME (not create) in this worker's
+// lifetime — e.g. DirectML initializes on the stock model but dies inside
+// session.run. Latched to CPU so we don't pay a failed run + session rebuild
+// on every subsequent generation; a worker restart retries the GPU.
+const runtimeFailedProviderKeys = new Set();
+// In-flight session.run promises. Shutdown must let these settle before the
+// session is released: releasing mid-run (or running post-release) throws a
+// native Napi::Error, which aborts the whole Electron process — the
+// "quit while audio is playing" SIGABRT.
+const inFlightRuns = new Set();
+async function runInference(feeds) {
+    if (isShuttingDown)
+        throw new Error("Generation aborted");
+    if (!cachedSession)
+        throw new Error("No ONNX session");
+    let run = cachedSession.run(feeds);
+    inFlightRuns.add(run);
+    try {
+        try {
+            return await run;
+        }
+        catch (err) {
+            // Run-time EP failure — a GPU provider that initialized fine but died
+            // inside session.run (DirectML does this on unsupported ops/shapes).
+            // Rebuild CPU-only once and retry this inference; latch so later
+            // generations skip the broken provider entirely.
+            inFlightRuns.delete(run);
+            const wasCpuOnly = cachedEffective.length === 1 && cachedEffective[0] === "cpu";
+            if (isShuttingDown || wasCpuOnly)
+                throw err;
+            console.warn(`[TTS Worker] inference failed on [${cachedEffective.join(", ")}] (${err instanceof Error ? err.message : String(err)}); rebuilding CPU-only and retrying`);
+            await rebuildSessionCpuOnly();
+            run = cachedSession.run(feeds);
+            inFlightRuns.add(run);
+            return await run;
+        }
+    }
+    finally {
+        inFlightRuns.delete(run);
+    }
+}
+// Swap the cached session for a CPU-only one after a run-time provider
+// failure. Latches the failed provider list for this worker's lifetime and
+// reports the change over IPC.
+async function rebuildSessionCpuOnly() {
+    if (!cachedModelId)
+        throw new Error("No model to rebuild");
+    if (cachedProvidersKey)
+        runtimeFailedProviderKeys.add(cachedProvidersKey);
+    const old = cachedSession;
+    const modelBuffer = await getModel(cachedModelId);
+    const { session, effective } = await createSessionWithFallback(modelBuffer, ["cpu"]);
+    cachedSession = session;
+    cachedProvidersKey = "cpu";
+    cachedEffective = effective;
+    parentPort?.postMessage({
+        type: "sessionInfo",
+        data: { model: cachedModelId, requested: ["cpu"], effective, fallback: true },
+    });
+    // Release the failed session only when nothing is mid-run on it.
+    if (old && inFlightRuns.size === 0) {
+        try {
+            await old.release();
+        }
+        catch {
+            /* best effort */
+        }
+    }
+}
 // Current request ID for progress messages
 let currentRequestId = null;
 // Shutdown flag to abort ongoing work
@@ -506,12 +593,34 @@ function trimWaveform(waveform) {
 // Get or create the ONNX session, reusing the module-level cache (shared with
 // generateVoice) when the model matches.
 async function ensureSession(model, acceleration) {
-    if (cachedSession && cachedModelId === model)
+    const requested = providersFor(acceleration);
+    const key = requested.join(",");
+    // A provider list that already failed at run time resolves straight to CPU.
+    const effectiveRequested = runtimeFailedProviderKeys.has(key) ? ["cpu"] : requested;
+    const effectiveKey = effectiveRequested.join(",");
+    if (cachedSession && cachedModelId === model && cachedProvidersKey === effectiveKey) {
         return cachedSession;
+    }
+    const old = cachedSession;
     const modelBuffer = await getModel(model);
-    const session = await createSessionWithFallback(modelBuffer, providersFor(acceleration));
+    const { session, effective } = await createSessionWithFallback(modelBuffer, effectiveRequested);
     cachedSession = session;
     cachedModelId = model;
+    cachedProvidersKey = effectiveKey;
+    cachedEffective = effective;
+    parentPort?.postMessage({
+        type: "sessionInfo",
+        data: { model, requested: effectiveRequested, effective },
+    });
+    // Release the replaced session only when nothing is mid-run on it.
+    if (old && inFlightRuns.size === 0) {
+        try {
+            await old.release();
+        }
+        catch {
+            /* best effort */
+        }
+    }
     return session;
 }
 function buildUnits(text) {
@@ -554,7 +663,7 @@ async function generateVoice(params) {
     // Split into units up front (cheap regex only); phonemize lazily while streaming.
     const units = buildUnits(params.text);
     // Get or create ONNX session (shared cache; GPU EP with CPU fallback).
-    const session = await ensureSession(params.model, params.acceleration);
+    await ensureSession(params.model, params.acceleration);
     const voices = parseVoiceFormula(params.voiceFormula);
     const combinedVoice = await combineVoices(voices);
     const lookAhead = LOOK_AHEAD_SIZES[params.acceleration] || 3;
@@ -593,7 +702,7 @@ async function generateVoice(params) {
             ]);
             const style = new ort.Tensor("float32", new Float32Array(ref_s), [1, ref_s.length]);
             const speed = new ort.Tensor("float32", [1], [1]);
-            const result = await session.run({ input_ids, style, speed });
+            const result = await runInference({ input_ids, style, speed });
             parts.push(trimWaveform(result.waveform.data));
         }
         if (parts.length === 0)
@@ -670,6 +779,13 @@ async function generateVoice(params) {
                 yieldReadyChunks();
                 // Fill look-ahead with more work
                 fillLookAhead();
+            }, 
+            // The drive loop sees the rejection via Promise.race on the same base
+            // promise; this handler only keeps the derived promise from becoming
+            // an unhandled rejection (which would crash the worker).
+            () => {
+                inFlight.delete(chunkIdx);
+                wakeGen();
             });
         }
     };
@@ -705,49 +821,114 @@ async function generateVoice(params) {
 }
 async function generateUnitsToStream(params, emit, isAborted) {
     const tokensPerChunk = MODEL_CONTEXT_WINDOW - 2;
-    const session = await ensureSession(params.model, params.acceleration);
+    await ensureSession(params.model, params.acceleration);
     const combinedVoice = await combineVoices(parseVoiceFormula(params.voiceFormula));
-    const lookAhead = LOOK_AHEAD_SIZES[params.acceleration] || 3;
-    // Flatten all units into one ordered chunk list, tagged with unitId. A unit
-    // that produces no audible chunks still gets a unitDone so the highlight can
+    const lookAhead = LOOK_AHEAD_SIZES[params.acceleration] || 1;
+    // ---- Lazy, bounded preparation (producer) ----
+    // Phonemization (espeak, ~60ms+ per segment) used to run for the WHOLE batch
+    // before the first inference, pushing first audio out by 1-2s for a 10-unit
+    // window. Instead a producer preps units lazily, staying only PREP_AHEAD
+    // chunks ahead of inference: first audio starts after ONE unit's
+    // phonemization, and espeak keeps overlapping inference without ever
+    // front-loading the batch. A unit that produces no audible chunks still gets
+    // a unitDone (emitted when the producer reaches it) so the highlight can
     // advance past it.
+    const PREP_AHEAD = Math.max(lookAhead + 2, 4);
     const prepared = [];
-    for (const unit of params.units) {
-        if (isAborted())
-            return;
-        const chunks = await preprocessText(unit.text, params.lang, tokensPerChunk);
-        const unitChunks = [];
-        for (const chunk of chunks) {
-            if (chunk.type === "silence") {
-                unitChunks.push({
-                    type: "silence",
-                    silenceLength: Math.floor(chunk.durationSeconds * SAMPLE_RATE),
-                    unitId: unit.id,
-                    isUnitEnd: false,
-                });
-            }
-            else if (chunk.type === "text" && (chunk.tokens?.length ?? 0) >= 1) {
-                unitChunks.push({ type: "text", tokens: chunk.tokens, unitId: unit.id, isUnitEnd: false });
-            }
-        }
-        if (unitChunks.length === 0) {
-            emit({ requestId: params.requestId, type: "unitDone", data: { unitId: unit.id } });
-            continue;
-        }
-        unitChunks[unitChunks.length - 1].isUnitEnd = true;
-        prepared.push(...unitChunks);
-    }
-    const total = prepared.length;
-    if (total === 0) {
-        emit({ requestId: params.requestId, type: "genComplete" });
-        return;
-    }
-    const results = new Array(total).fill(null);
-    const completed = new Array(total).fill(false);
+    let prepDone = false;
+    let sawFirstTextChunk = false;
+    let wakeConsumerFn = null;
+    let wakeProducerFn = null;
+    const wakeConsumer = () => {
+        const w = wakeConsumerFn;
+        wakeConsumerFn = null;
+        if (w)
+            w();
+    };
+    const wakeProducer = () => {
+        const w = wakeProducerFn;
+        wakeProducerFn = null;
+        if (w)
+            w();
+    };
+    const results = [];
+    const completed = [];
     let nextToYield = 0;
     let nextToStart = 0;
-    let completedCount = 0;
     const inFlight = new Map();
+    const prepare = async () => {
+        try {
+            for (const unit of params.units) {
+                if (isAborted())
+                    return;
+                while (prepared.length - nextToStart >= PREP_AHEAD) {
+                    await new Promise((resolve) => {
+                        wakeProducerFn = resolve;
+                    });
+                    if (isAborted())
+                        return;
+                }
+                const chunks = await preprocessText(unit.text, params.lang, tokensPerChunk);
+                const unitChunks = [];
+                for (const chunk of chunks) {
+                    if (chunk.type === "silence") {
+                        unitChunks.push({
+                            type: "silence",
+                            silenceLength: Math.floor(chunk.durationSeconds * SAMPLE_RATE),
+                            unitId: unit.id,
+                            isUnitEnd: false,
+                        });
+                    }
+                    else if (chunk.type === "text" && (chunk.tokens?.length ?? 0) >= 1) {
+                        if (!sawFirstTextChunk && params.fastStart) {
+                            sawFirstTextChunk = true;
+                            // Carve a small head off the generation's first text chunk (word
+                            // boundary only) so the first inference is short and audio starts
+                            // flowing; the head is long enough to cover the next inference.
+                            const split = splitLeadingPhonemes(chunk.content, FIRST_CHUNK_PHONEMES);
+                            const headTokens = split ? tokenize(split[0]) : [];
+                            const restTokens = split ? tokenize(split[1]) : [];
+                            if (headTokens.length >= 1 && restTokens.length >= 1) {
+                                unitChunks.push({
+                                    type: "text",
+                                    tokens: headTokens,
+                                    unitId: unit.id,
+                                    isUnitEnd: false,
+                                });
+                                unitChunks.push({
+                                    type: "text",
+                                    tokens: restTokens,
+                                    unitId: unit.id,
+                                    isUnitEnd: false,
+                                });
+                                continue;
+                            }
+                        }
+                        sawFirstTextChunk = true;
+                        unitChunks.push({
+                            type: "text",
+                            tokens: chunk.tokens,
+                            unitId: unit.id,
+                            isUnitEnd: false,
+                        });
+                    }
+                }
+                if (unitChunks.length === 0) {
+                    emit({ requestId: params.requestId, type: "unitDone", data: { unitId: unit.id } });
+                    continue;
+                }
+                unitChunks[unitChunks.length - 1].isUnitEnd = true;
+                prepared.push(...unitChunks);
+                wakeConsumer();
+            }
+        }
+        finally {
+            // Always flip prepDone and wake the consumer, even on abort/throw, so
+            // the drive loop can never park forever waiting for more chunks.
+            prepDone = true;
+            wakeConsumer();
+        }
+    };
     const processChunk = async (idx) => {
         const pc = prepared[idx];
         if (pc.type === "silence") {
@@ -762,13 +943,13 @@ async function generateUnitsToStream(params, emit, isAborted) {
         ]);
         const style = new ort.Tensor("float32", new Float32Array(ref_s), [1, ref_s.length]);
         const speed = new ort.Tensor("float32", [1], [1]);
-        const result = await session.run({ input_ids, style, speed });
+        const result = await runInference({ input_ids, style, speed });
         let waveform = result.waveform.data;
         waveform = trimWaveform(waveform);
         return { index: idx, waveform };
     };
     const yieldReady = () => {
-        while (nextToYield < total && completed[nextToYield]) {
+        while (nextToYield < prepared.length && completed[nextToYield]) {
             const pc = prepared[nextToYield];
             const waveform = results[nextToYield];
             const wavBuffer = createWavBuffer(waveform, SAMPLE_RATE);
@@ -786,7 +967,7 @@ async function generateUnitsToStream(params, emit, isAborted) {
         }
     };
     const fill = () => {
-        while (inFlight.size < lookAhead && nextToStart < total) {
+        while (inFlight.size < lookAhead && nextToStart < prepared.length) {
             if (isAborted())
                 return;
             const idx = nextToStart++;
@@ -795,32 +976,64 @@ async function generateUnitsToStream(params, emit, isAborted) {
             promise.then((r) => {
                 results[r.index] = r.waveform;
                 completed[r.index] = true;
-                completedCount++;
                 inFlight.delete(r.index);
                 yieldReady();
+                wakeProducer(); // inference advanced; the producer may prep further ahead
                 if (!isAborted())
                     fill();
+            }, 
+            // The drive loop sees the rejection via Promise.race on the same base
+            // promise; this handler only keeps the derived promise from becoming
+            // an unhandled rejection (which would crash the worker).
+            () => {
+                inFlight.delete(idx);
+                wakeProducer();
             });
         }
+        wakeProducer(); // nextToStart advanced; unblock a parked producer
     };
-    fill();
-    while (completedCount < total) {
-        if (isAborted())
-            return;
-        if (inFlight.size > 0) {
-            await Promise.race(inFlight.values());
-        }
-        else {
-            break;
+    // Drive: consume prepared chunks as the producer delivers them. The two
+    // parks are mutually exclusive (the consumer only parks when it has nothing
+    // startable, the producer only parks when it is PREP_AHEAD chunks ahead), so
+    // this cannot deadlock; abort wakes both via the finally/wake calls below.
+    const prepPromise = prepare();
+    try {
+        while (!isAborted()) {
+            fill();
+            if (inFlight.size > 0) {
+                await Promise.race(inFlight.values());
+            }
+            else if (!prepDone) {
+                await new Promise((resolve) => {
+                    wakeConsumerFn = resolve;
+                });
+            }
+            else if (nextToStart >= prepared.length) {
+                break; // nothing in flight, nothing startable, nothing more coming
+            }
         }
     }
+    finally {
+        // Even when a chunk rejects (e.g. shutdown mid-inference), unpark the
+        // producer and wait for it so no promise is left dangling in the worker.
+        wakeProducer();
+        await prepPromise.catch(() => { });
+    }
+    if (isAborted())
+        return;
     yieldReady();
-    if (!isAborted())
-        emit({ requestId: params.requestId, type: "genComplete" });
+    emit({ requestId: params.requestId, type: "genComplete" });
 }
 // Cleanup function for graceful shutdown
 async function cleanup() {
     console.log("[Worker] Cleaning up...");
+    // Let in-flight inference settle before releasing the session (releasing
+    // mid-run aborts the process with a native Napi::Error). isShuttingDown is
+    // already set, so no NEW runs start; bound the wait in case a run hangs.
+    const deadline = Date.now() + 10_000;
+    while (inFlightRuns.size > 0 && Date.now() < deadline) {
+        await Promise.allSettled([...inFlightRuns]);
+    }
     // Release ONNX session (Kokoro)
     if (cachedSession) {
         try {
@@ -849,12 +1062,19 @@ parentPort?.on("message", async (message) => {
             return;
         try {
             console.log("Preloading model:", data.model);
-            await getModel(data.model);
+            // Build the ONNX session now (not just read the model bytes) so the
+            // ~600ms session creation is paid at app launch instead of on the
+            // user's first play.
+            await ensureSession(data.model, data.acceleration || "cpu");
             console.log("Model preloaded successfully");
         }
         catch (error) {
             console.error("Failed to preload model:", error);
         }
+        parentPort?.postMessage({
+            type: "preloadComplete",
+            data: { sessionReady: cachedSession !== null, providers: cachedEffective },
+        });
         return;
     }
     if (type === "cancel") {
