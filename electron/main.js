@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, } from "electron";
-import { registerSelectionReader, unregisterSelectionReader, setSelectionShortcut, suspendSelectionReader, resumeSelectionReader, DEFAULT_READ_ALOUD_SHORTCUT, } from "./selection-reader.js";
 import { installMacService } from "./mac-service.js";
+import { execFile } from "child_process";
 import { Worker } from "worker_threads";
 import * as path from "path";
 import * as fs from "fs";
@@ -134,6 +134,7 @@ function createWindow() {
         minWidth: 400,
         minHeight: 500,
         resizable: true,
+        show: false,
         // Frameless-with-traffic-lights only makes sense on macOS. On Windows/Linux
         // we keep the native frame so users get the expected min/max/close buttons
         // and OS-native drag, instead of an invisible drag region fighting them.
@@ -144,6 +145,34 @@ function createWindow() {
             sandbox: false,
             preload: preloadPath,
         },
+    });
+    // Show only once rendered, and explicitly take focus: on macOS a freshly
+    // launched app (from a terminal, login item, etc.) is not activated
+    // automatically, so the window would appear behind whatever has focus and
+    // the text box's autofocus never fires.
+    mainWindow.once("ready-to-show", () => {
+        mainWindow?.show();
+        mainWindow?.focus();
+        if (isMac) {
+            app.focus({ steal: true });
+            // Recent macOS refuses activation requests from apps that weren't
+            // launched by direct user action (e.g. dev runs spawned from a
+            // terminal), so app.focus() can silently do nothing. If we're still not
+            // focused a moment later, force it via System Events — Dock/Finder
+            // launches are already active by then, so this (and its one-time
+            // Automation consent) only ever fires for terminal-spawned runs.
+            setTimeout(() => {
+                if (!mainWindow || mainWindow.isFocused())
+                    return;
+                execFile("osascript", [
+                    "-e",
+                    `tell application "System Events" to set frontmost of (first application process whose unix id is ${process.pid}) to true`,
+                ], (err, _stdout, stderr) => {
+                    if (err)
+                        console.warn("[focus] System Events activation failed:", stderr || err.message);
+                });
+            }, 400);
+        }
     });
     // Load React UI - from dev server in development, from built files in production
     if (isDev) {
@@ -471,18 +500,12 @@ let sharedSettings = {
     voice: "af_heart",
     volume: 80,
     highlightChunk: false,
-    readAloudShortcut: DEFAULT_READ_ALOUD_SHORTCUT,
 };
 function getSharedSettings() {
     return { ...sharedSettings };
 }
 function updateSharedSettings(updates, options = {}) {
-    const prevShortcut = sharedSettings.readAloudShortcut;
     sharedSettings = { ...sharedSettings, ...updates };
-    // Re-register the global hotkey when the user changes it in Settings.
-    if (updates.readAloudShortcut && updates.readAloudShortcut !== prevShortcut) {
-        setSelectionShortcut(sharedSettings.readAloudShortcut);
-    }
     // Broadcast to the renderer ONLY when the change came from outside the
     // renderer (e.g. the Chrome extension via the HTTP API). Broadcasting
     // back to the same renderer that initiated an IPC update races with
@@ -944,14 +967,6 @@ ipcMain.on("tray:playing", (_event, playing) => {
         stopTrayAnimation();
     }
 });
-// While the user records a new read-aloud shortcut in Settings, release the
-// global hotkey so it neither fires nor swallows the keys being recorded.
-ipcMain.on("shortcut:recording", (_event, recording) => {
-    if (recording)
-        suspendSelectionReader();
-    else
-        resumeSelectionReader();
-});
 // ---- Update notice (GitHub latest release vs running version) ----
 // Current available-update info, or null when up to date.
 ipcMain.handle("update:get", async () => getUpdate());
@@ -999,10 +1014,10 @@ ipcMain.on("app:quit", () => {
     app.quit();
 });
 // ============ App Lifecycle ============
-// Audio is started programmatically (global hotkey / macOS "Read out loud"
-// Service), not always from a click in our own window. Chromium's default
-// autoplay policy gates AudioContext on a user gesture in the page, which would
-// leave hotkey-triggered playback silently suspended. Lift that gate.
+// Audio is started programmatically (macOS "Read out loud" Service), not
+// always from a click in our own window. Chromium's default autoplay policy
+// gates AudioContext on a user gesture in the page, which would leave
+// service-triggered playback silently suspended. Lift that gate.
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.whenReady().then(() => {
     // Init telemetry first so app_launched and early events are captured. No-op
@@ -1022,9 +1037,6 @@ app.whenReady().then(() => {
     createWindow();
     preloadModel();
     startUpdateChecks(() => mainWindow);
-    // Global hotkey to read the current selection aloud from any app (incl. the
-    // Slack desktop app, which can't host our own UI).
-    registerSelectionReader(() => mainWindow, sharedSettings.readAloudShortcut);
     // macOS only: install the "Read out loud" right-click Services entry, which
     // pipes the selection to the local /api/v1/speak endpoint. Not available in
     // MAS builds (no localhost server there).
@@ -1042,9 +1054,6 @@ app.whenReady().then(() => {
 });
 app.on("window-all-closed", () => {
     // Don't quit - keep running in tray
-});
-app.on("will-quit", () => {
-    unregisterSelectionReader();
 });
 // Guards against a second before-quit re-entering teardown (e.g. the user
 // clicking Quit again during the brief telemetry-flush window before app.exit).

@@ -20,6 +20,7 @@ export default {
         // resolver follows the import to the .js and would otherwise flag the
         // .ts sources as unused — list them as entries like the other modules.
         "electron/update-check.ts",
+        "electron/mac-service.ts",
         "electron/store.ts",
         "electron/reader-recents.ts",
         "electron/telemetry.ts",

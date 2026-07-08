@@ -110,17 +110,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return await ipcRenderer.invoke("update:skip", version);
   },
 
-  // Text captured by the global read-selection hotkey / macOS Service, to be
-  // spoken in the UI. Payload: { text, source }.
+  // Text captured by the macOS "Read out loud" Service, to be spoken in the
+  // UI. Payload: { text, source }.
   onExternalSpeak: (callback: (payload: { text: string; source: string }) => void) => {
     const handler = (_event: any, payload: { text: string; source: string }) => callback(payload);
     ipcRenderer.on("external:speak", handler);
     return () => ipcRenderer.removeListener("external:speak", handler);
-  },
-
-  // Pause/resume the global read-aloud hotkey while recording a new one.
-  setShortcutRecording: (recording: boolean) => {
-    ipcRenderer.send("shortcut:recording", recording);
   },
 
   // Open an https link in the default browser.
@@ -197,7 +192,6 @@ interface SharedSettings {
   voice: string;
   volume: number;
   highlightChunk: boolean;
-  readAloudShortcut: string;
 }
 
 // Update info (mirrors electron/update-check.ts)
@@ -247,7 +241,6 @@ declare global {
       onExternalSpeak: (
         callback: (payload: { text: string; source: string }) => void
       ) => () => void;
-      setShortcutRecording: (recording: boolean) => void;
       openExternal: (url: string) => void;
       track: (name: string, properties?: Record<string, unknown>) => void;
       setSidebar: (open: boolean) => Promise<void>;

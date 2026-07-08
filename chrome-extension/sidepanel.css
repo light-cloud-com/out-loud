@@ -243,20 +243,6 @@ select option {
   box-shadow: none;
 }
 
-.btn-secondary {
-  background: #374151;
-  color: #fff;
-  padding: 12px;
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background: #4b5563;
-}
-
-.btn-secondary:active:not(:disabled) {
-  background: #1f2937;
-}
-
 .icon {
   width: 18px;
   height: 18px;
@@ -420,35 +406,6 @@ select option {
   margin-top: 12px;
   font-size: 11px;
   color: #6b7280;
-}
-
-/* Footer */
-.footer {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding-top: 8px;
-  flex-shrink: 0;
-}
-
-.footer-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #4b5563;
-  font-size: 11px;
-  text-decoration: none;
-  cursor: pointer;
-  transition: color 0.2s;
-}
-
-.footer-brand:hover {
-  color: #9ca3af;
-}
-
-.footer-logo {
-  height: 20px;
-  width: auto;
 }
 
 /* Volume Slider */

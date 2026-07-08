@@ -1,19 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Out Loud - Text to Speech",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Read selected text aloud using AI Text-to-Speech",
   "permissions": ["activeTab", "storage", "sidePanel", "contextMenus"],
   "host_permissions": ["<all_urls>"],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+    "extension_pages": "script-src 'self'; object-src 'self'"
   },
-  "web_accessible_resources": [
-    {
-      "resources": ["lib/*"],
-      "matches": ["<all_urls>"]
-    }
-  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -24,11 +18,6 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"]
-    },
-    {
-      "matches": ["*://app.slack.com/*"],
-      "js": ["constants.js", "src/streaming-player.js", "slack.js"],
-      "css": ["slack.css"]
     }
   ],
   "action": {

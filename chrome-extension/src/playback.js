@@ -183,11 +183,3 @@ function setVolume(vol) {
 function clearCache() {
   cachedAudio = { text: "", voice: "", chunks: [] };
 }
-
-function hasCachedAudio() {
-  return cachedAudio.chunks.length > 0;
-}
-
-function getCachedText() {
-  return cachedAudio.text;
-}

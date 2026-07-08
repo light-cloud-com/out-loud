@@ -5,7 +5,6 @@ import { VolumeSlider } from "./components/VolumeSlider";
 import { PlaybackControls } from "./components/PlaybackControls";
 import { ProgressBar } from "./components/ProgressBar";
 import { SettingsCheckbox } from "./components/SettingsCheckbox";
-import { ShortcutRecorder } from "./components/ShortcutRecorder";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { AboutDialog } from "./components/AboutDialog";
 import { IdentityDialog } from "./components/IdentityDialog";
@@ -36,6 +35,16 @@ function App() {
 
   useEffect(() => {
     window.electronAPI?.getAppVersion?.().then(setVersion);
+  }, []);
+
+  // Focus the text box on launch and whenever the window regains focus. The
+  // textarea's autoFocus fires at React mount, which in Electron happens
+  // before the window is shown/focused, so it doesn't stick on its own.
+  useEffect(() => {
+    textareaRef.current?.focus();
+    const onFocus = () => textareaRef.current?.focus();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, []);
 
   // Read settings.text verbatim. DEFAULT_TEXT is seeded into settings once on
@@ -125,8 +134,9 @@ function App() {
     player.play(text, settings.voice, settings.language);
   };
 
-  // Keyboard-driven "speak now": Enter (or ⌘/Ctrl+Enter) speaks the text and
-  // clears the box for the next line; Shift+Enter inserts a newline.
+  // Keyboard-driven "speak now": Enter (or ⌘/Ctrl+Enter) speaks the text;
+  // Shift+Enter inserts a newline. The text stays in the box so the spoken
+  // chunk can be highlighted & auto-scrolled while it plays.
   const speak = useCallback(() => {
     if (!text.trim()) return;
     track("quick_speak_initiated", {
@@ -138,11 +148,10 @@ function App() {
     lib.addSession(text, settings.voice, settings.language);
     playClick();
     player.play(text, settings.voice, settings.language, { forceRestart: true });
-    setText("");
-  }, [text, settings.voice, settings.language, player, setText, lib]);
+  }, [text, settings.voice, settings.language, player, lib]);
 
-  // Text captured by the global read-selection hotkey (works from any app, incl.
-  // Slack desktop): drop it into the editor and speak it immediately.
+  // Text captured by the macOS "Read out loud" Service (works from any app):
+  // drop it into the editor and speak it immediately.
   useEffect(() => {
     const api = window.electronAPI;
     if (!api?.onExternalSpeak) return;
@@ -158,8 +167,8 @@ function App() {
         .replace(/\n{3,}/g, "\n\n")
         .trim();
       if (!t) return;
-      // Track reads triggered outside the app window (global hotkey / macOS
-      // "Read out loud" Service) so usage of the feature is visible.
+      // Track reads triggered outside the app window (macOS "Read out loud"
+      // Service) so usage of the feature is visible.
       track("quick_speak_initiated", {
         text_length_bucket: lengthBucket(t.length),
         language: settings.language,
@@ -184,9 +193,17 @@ function App() {
     [lib, loadIntoEditor]
   );
 
-  // Esc returns focus to the text box, or closes the About panel.
+  // Esc returns focus to the text box, or closes the About panel. ⌘/Ctrl+L
+  // focuses it with everything selected, so a paste replaces the content
+  // without touching the mouse.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        textareaRef.current?.focus();
+        textareaRef.current?.select();
+        return;
+      }
       if (e.key !== "Escape") return;
       if (aboutOpen) {
         setAboutOpen(false);
@@ -389,10 +406,6 @@ function App() {
                 checked={settings.highlightChunk}
                 onChange={(checked) => updateSetting("highlightChunk", checked)}
               />
-              <ShortcutRecorder
-                value={settings.readAloudShortcut}
-                onChange={(acc) => updateSetting("readAloudShortcut", acc)}
-              />
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -427,7 +440,6 @@ function App() {
       <AboutDialog
         open={aboutOpen}
         version={version}
-        shortcut={settings.readAloudShortcut}
         onClose={() => setAboutOpen(false)}
         onOpen={open}
       />

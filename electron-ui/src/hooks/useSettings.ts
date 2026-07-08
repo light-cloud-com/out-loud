@@ -7,7 +7,6 @@ interface Settings {
   voice: string;
   volume: number;
   highlightChunk: boolean;
-  readAloudShortcut: string;
 }
 
 const STORAGE_KEY = "out-loud-settings";

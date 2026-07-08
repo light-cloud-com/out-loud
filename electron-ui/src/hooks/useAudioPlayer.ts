@@ -61,7 +61,10 @@ export function useAudioPlayer(
   const audioCtxRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
   const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
-  const lastPlayedTextRef = useRef("");
+  // Key of what's currently loaded in the audio graph: `text|voice|language`.
+  // Resume must compare all three — resuming after a voice/language change
+  // would replay audio generated with the old voice (issue #31).
+  const lastPlayedKeyRef = useRef("");
   const cachedAudioBuffersRef = useRef<AudioBuffer[]>([]);
   const cachedKeyRef = useRef("");
   const animationFrameRef = useRef<number | null>(null);
@@ -281,8 +284,8 @@ export function useAudioPlayer(
       // (talker mode: each Enter re-speaks the new line, never pauses).
       if (!opts?.forceRestart && state.isPlaying && audioCtxRef.current) {
         if (state.isPaused) {
-          // Resume - but if text changed, start over
-          if (text !== lastPlayedTextRef.current) {
+          // Resume - but if the text, voice, or language changed, start over
+          if (`${text}|${voice}|${language}` !== lastPlayedKeyRef.current) {
             stopAudio();
             // Fall through to start fresh
           } else {
@@ -321,7 +324,7 @@ export function useAudioPlayer(
       }
 
       stopAudio();
-      lastPlayedTextRef.current = text;
+      lastPlayedKeyRef.current = `${text}|${voice}|${language}`;
 
       // Reset tracking refs
       playbackStartTimeRef.current = 0;
