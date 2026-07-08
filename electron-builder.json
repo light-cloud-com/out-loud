@@ -87,6 +87,13 @@
   },
   "mas": {
     "hardenedRuntime": false,
+    "target": [
+      {
+        "target": "pkg",
+        "arch": ["universal"]
+      }
+    ],
+    "x64ArchFiles": "**/onnxruntime-node/bin/**",
     "identity": "Julia Kafarska (8Y2UTZ2NBZ)",
     "provisioningProfile": "build-resources/embedded.provisionprofile",
     "entitlements": "build-resources/entitlements.mas.plist",
