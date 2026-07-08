@@ -69,9 +69,9 @@ export function AboutDialog({ open, version, onClose, onOpen }: AboutDialogProps
           <section className="mb-4">
             <h3 className="mb-1 font-semibold text-gray-200">Read aloud from anywhere</h3>
             <p className="text-gray-400">
-              Select text in any app — Slack, your browser, Mail, a PDF — then right-click it and
-              choose <span className="font-medium text-gray-200">Read out loud</span> (under
-              Services) to hear it. Out Loud just needs to be running (it can stay in the menu bar).
+              Select text in any app — your browser, Mail, a PDF — then right-click it and choose{" "}
+              <span className="font-medium text-gray-200">Read out loud</span> (under Services) to
+              hear it. Out Loud just needs to be running (it can stay in the menu bar).
             </p>
           </section>
         )}

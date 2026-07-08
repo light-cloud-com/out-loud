@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
   "appId": "io.out-loud.outloud",
   "productName": "Out Loud",
-  "buildVersion": "2.0.4",
+  "buildVersion": "2.1.0",
   "directories": {
     "output": "releases/desktop",
     "buildResources": "build-resources"

@@ -1,6 +1,6 @@
 {
   "name": "out-loud",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Free for non-commercial use, source-available, 100% offline AI text-to-speech desktop app powered by Kokoro-82M.",
   "author": {
     "name": "Julia Kafarska",
@@ -38,7 +38,8 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "knip": "knip",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run --passWithNoTests --exclude \"tests/**/*.integration.test.ts\"",
+    "test:integration": "vitest run tests/",
     "check": "npm run lint && npm run format:check && npm run knip && npm run electron:compile",
     "release": "node scripts/release.mjs",
     "prepare": "husky",
