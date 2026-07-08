@@ -11,6 +11,7 @@ interface UpdateInfo {
   latest: string;
   notesUrl: string;
   downloadUrl: string;
+  highlights: string[];
 }
 
 interface UserIdentity {
@@ -52,6 +53,7 @@ interface ElectronAPI {
   getUpdate: () => Promise<UpdateInfo | null>;
   onUpdateAvailable: (callback: (update: UpdateInfo | null) => void) => () => void;
   skipVersion: (version: string) => Promise<UpdateInfo | null>;
+  onExternalSpeak: (callback: (payload: { text: string; source: string }) => void) => () => void;
   openExternal: (url: string) => void;
   track: (name: string, properties?: Record<string, unknown>) => void;
   setSidebar: (open: boolean) => Promise<void>;
@@ -99,6 +101,9 @@ declare global {
     requestId: string;
     units: { id: string; text: string }[];
     voice: string;
+    /** Playback buffer is empty (play/seek): worker carves a small first
+     *  chunk for fast first audio. Leave unset on refill batches. */
+    fastStart?: boolean;
   }
 
   interface ReaderApi {

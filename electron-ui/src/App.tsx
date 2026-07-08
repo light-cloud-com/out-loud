@@ -37,6 +37,16 @@ function App() {
     window.electronAPI?.getAppVersion?.().then(setVersion);
   }, []);
 
+  // Focus the text box on launch and whenever the window regains focus. The
+  // textarea's autoFocus fires at React mount, which in Electron happens
+  // before the window is shown/focused, so it doesn't stick on its own.
+  useEffect(() => {
+    textareaRef.current?.focus();
+    const onFocus = () => textareaRef.current?.focus();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   // Read settings.text verbatim. DEFAULT_TEXT is seeded into settings once on
   // first launch (see useSettings); after that, the empty string is a legit
   // value the user chose.
@@ -124,8 +134,9 @@ function App() {
     player.play(text, settings.voice, settings.language);
   };
 
-  // Keyboard-driven "speak now": Enter (or ⌘/Ctrl+Enter) speaks the text and
-  // clears the box for the next line; Shift+Enter inserts a newline.
+  // Keyboard-driven "speak now": Enter (or ⌘/Ctrl+Enter) speaks the text;
+  // Shift+Enter inserts a newline. The text stays in the box so the spoken
+  // chunk can be highlighted & auto-scrolled while it plays.
   const speak = useCallback(() => {
     if (!text.trim()) return;
     track("quick_speak_initiated", {
@@ -137,8 +148,69 @@ function App() {
     lib.addSession(text, settings.voice, settings.language);
     playClick();
     player.play(text, settings.voice, settings.language, { forceRestart: true });
-    setText("");
-  }, [text, settings.voice, settings.language, player, setText, lib]);
+  }, [text, settings.voice, settings.language, player, lib]);
+
+  // Text captured by the macOS "Read out loud" Service (works from any app):
+  // drop it into the editor and speak it immediately.
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api?.onExternalSpeak) return;
+    return api.onExternalSpeak(({ text: incoming, source }) => {
+      // Copied selections (esp. from web pages) carry junk: hidden/zero-width
+      // chars, tabs, and block whitespace. Normalize to clean, speakable text.
+      const t = incoming
+        .replace(/\r\n?/g, "\n")
+        // eslint-disable-next-line no-control-regex -- strip control & zero-width chars from copied text
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u200B-\u200D\uFEFF]/g, "")
+        .replace(/[ \t]+/g, " ")
+        .replace(/[ \t]*\n[ \t]*/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      if (!t) return;
+      // Track reads triggered outside the app window (macOS "Read out loud"
+      // Service) so usage of the feature is visible.
+      track("quick_speak_initiated", {
+        text_length_bucket: lengthBucket(t.length),
+        language: settings.language,
+        voice_id: settings.voice,
+        trigger_type: source === "service" ? "macos_service" : "global_shortcut",
+      });
+      setText(t);
+      lib.addSession(t, settings.voice, settings.language);
+      player.play(t, settings.voice, settings.language, { forceRestart: true });
+    });
+  }, [settings.voice, settings.language, player, setText, lib]);
+
+  // Text captured by the macOS "Read out loud" Service: drop it into the
+  // editor and speak it immediately.
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api?.onExternalSpeak) return;
+    return api.onExternalSpeak(({ text: incoming, source }) => {
+      // Copied selections (esp. from web pages) carry junk: hidden/zero-width
+      // chars, tabs, and block whitespace. Normalize to clean, speakable text.
+      const t = incoming
+        .replace(/\r\n?/g, "\n")
+        // eslint-disable-next-line no-control-regex -- strip control & zero-width chars from copied text
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u200B-\u200D\uFEFF]/g, "")
+        .replace(/[ \t]+/g, " ")
+        .replace(/[ \t]*\n[ \t]*/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      if (!t) return;
+      // Track reads triggered outside the app window (macOS "Read out loud"
+      // Service) so usage of the feature is visible.
+      track("quick_speak_initiated", {
+        text_length_bucket: lengthBucket(t.length),
+        language: settings.language,
+        voice_id: settings.voice,
+        trigger_type: source === "service" ? "macos_service" : "external",
+      });
+      setText(t);
+      lib.addSession(t, settings.voice, settings.language);
+      player.play(t, settings.voice, settings.language, { forceRestart: true });
+    });
+  }, [settings.voice, settings.language, player, setText, lib]);
 
   // Drag-and-drop a file anywhere on the content → load its text into the editor.
   const onDrop = useCallback(
@@ -152,9 +224,17 @@ function App() {
     [lib, loadIntoEditor]
   );
 
-  // Esc returns focus to the text box, or closes the About panel.
+  // Esc returns focus to the text box, or closes the About panel. ⌘/Ctrl+L
+  // focuses it with everything selected, so a paste replaces the content
+  // without touching the mouse.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        textareaRef.current?.focus();
+        textareaRef.current?.select();
+        return;
+      }
       if (e.key !== "Escape") return;
       if (aboutOpen) {
         setAboutOpen(false);

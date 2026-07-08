@@ -5,6 +5,8 @@ export interface UpdateInfo {
   latest: string;
   notesUrl: string;
   downloadUrl: string;
+  // Curated one-line highlights for the latest release (from WHATSNEW.txt).
+  highlights: string[];
 }
 
 // Subscribes to the main-process update check (GitHub latest release vs the

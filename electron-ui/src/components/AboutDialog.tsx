@@ -1,4 +1,6 @@
+import type { ReactNode } from "react";
 import iconUrl from "../assets/icon.png";
+import { IS_MAC } from "../lib/platform";
 
 interface AboutDialogProps {
   open: boolean;
@@ -9,7 +11,7 @@ interface AboutDialogProps {
 
 const REPO_URL = "https://github.com/light-cloud-com/out-loud";
 
-function Row({ keys, desc }: { keys: string; desc: string }) {
+function Row({ keys, desc }: { keys: ReactNode; desc: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-0.5">
       <kbd className="rounded border border-gray-600 bg-gray-800 px-1.5 py-0.5 font-mono text-[10px] text-gray-200">
@@ -22,6 +24,8 @@ function Row({ keys, desc }: { keys: string; desc: string }) {
 
 export function AboutDialog({ open, version, onClose, onOpen }: AboutDialogProps) {
   if (!open) return null;
+
+  const isMac = IS_MAC;
 
   return (
     <div
@@ -52,19 +56,34 @@ export function AboutDialog({ open, version, onClose, onOpen }: AboutDialogProps
 
         <section className="mb-4">
           <h3 className="mb-1 font-semibold text-gray-200">Keyboard shortcuts</h3>
-          <Row keys="Enter" desc="Speak the text, then clear it" />
+          <Row keys="Enter" desc="Speak the text" />
           <Row keys="Shift + Enter" desc="New line (don't speak)" />
           <Row keys="Esc" desc="Jump back to the text box" />
+          <Row
+            keys={isMac ? "⌘ + L" : "Ctrl + L"}
+            desc="Focus the text box & select all — paste to replace"
+          />
         </section>
+
+        {isMac && (
+          <section className="mb-4">
+            <h3 className="mb-1 font-semibold text-gray-200">Read aloud from anywhere</h3>
+            <p className="text-gray-400">
+              Select text in any app — your browser, Mail, a PDF — then right-click it and choose{" "}
+              <span className="font-medium text-gray-200">Read out loud</span> (under Services) to
+              hear it. Out Loud just needs to be running (it can stay in the menu bar).
+            </p>
+          </section>
+        )}
 
         <section className="mb-4">
           <h3 className="mb-1 font-semibold text-gray-200">Type &amp; speak</h3>
           <p className="text-gray-400">
-            Press <span className="text-gray-300">Enter</span> to speak the text and clear the box,
-            and keep typing the next line while the last is still playing — the text box never locks
-            and the cursor never leaves it. Use <span className="text-gray-300">Shift+Enter</span>{" "}
-            for a new line, or the <span className="text-gray-300">Play</span> button to speak
-            without clearing.
+            Press <span className="text-gray-300">Enter</span> to speak the text — it stays in the
+            box so the spoken part can be highlighted and scrolled into view while it plays. The box
+            never locks and the cursor never leaves it. Use{" "}
+            <span className="text-gray-300">Shift+Enter</span> for a new line, or the{" "}
+            <span className="text-gray-300">Play</span> button.
           </p>
         </section>
 

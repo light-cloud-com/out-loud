@@ -5,7 +5,6 @@ const ui = {
   voiceSelect: null,
   languageSelect: null,
   playBtn: null,
-  downloadBtn: null,
   volumeSlider: null,
   volumeValue: null,
   highlightCheckbox: null,
@@ -19,7 +18,6 @@ const ui = {
     icon.innerHTML = isPlaying
       ? '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>'
       : '<path d="M8 5v14l11-7z"/>';
-    if (this.downloadBtn) this.downloadBtn.disabled = !hasCachedAudio();
   },
   updateHighlight() {
     updateHighlight(this.textEl, this.overlay, isPlaying);
@@ -39,7 +37,6 @@ async function init() {
   ui.voiceSelect = document.getElementById("voice-select");
   ui.languageSelect = document.getElementById("language-select");
   ui.playBtn = document.getElementById("play-btn");
-  ui.downloadBtn = document.getElementById("download-btn");
   ui.volumeSlider = document.getElementById("volume-slider");
   ui.volumeValue = document.getElementById("volume-value");
   ui.highlightCheckbox = document.getElementById("highlight-checkbox");
@@ -57,8 +54,29 @@ async function init() {
   await loadSettings();
   applySettings();
   bindEvents();
+  ui.textEl.focus();
   await checkServer();
+  startSettingsSync();
   listenForMessages();
+}
+
+// Keep the highlight & auto-scroll toggle in step with the desktop app. The
+// app can't push events into the panel, so poll its settings endpoint while
+// the panel is visible and mirror external changes.
+function startSettingsSync() {
+  setInterval(async () => {
+    if (document.hidden) return;
+    const server = await fetchSettings();
+    if (!server || server.highlightChunk === undefined) return;
+    if (server.highlightChunk !== settings.highlightChunk) {
+      settings.highlightChunk = server.highlightChunk;
+      if (ui.highlightCheckbox) ui.highlightCheckbox.checked = settings.highlightChunk;
+      try {
+        chrome.storage.sync.set({ ttsSettings: settings });
+      } catch (e) {}
+      isPlaying ? ui.updateHighlight() : ui.clearHighlight();
+    }
+  }, 2500);
 }
 
 function applySettings() {
@@ -111,10 +129,11 @@ function bindEvents() {
   });
 
   ui.playBtn.addEventListener("click", () => togglePlayback(ui));
-  ui.downloadBtn?.addEventListener("click", download);
 }
 
 function listenForMessages() {
+  // Absent when the page is opened outside the extension (e.g. dev server).
+  if (!chrome?.runtime?.onMessage) return;
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "TEXT_SELECTED" || msg.type === "PLAY_TEXT") {
       const text = msg.text.trim();
@@ -127,29 +146,6 @@ function listenForMessages() {
       if (msg.type === "PLAY_TEXT") togglePlayback(ui);
     }
   });
-}
-
-async function download() {
-  if (!hasCachedAudio() || !(await checkServer())) return;
-
-  ui.downloadBtn.disabled = true;
-  ui.downloadBtn.innerHTML = '<div class="spinner small"></div>';
-
-  try {
-    const blob = await fetchAudio(getCachedText(), settings.voice, "wav");
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "out-loud-audio.wav";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  } catch (e) {}
-
-  ui.downloadBtn.disabled = !hasCachedAudio();
-  ui.downloadBtn.innerHTML =
-    '<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>';
 }
 
 document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", init) : init();

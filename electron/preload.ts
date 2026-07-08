@@ -110,6 +110,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return await ipcRenderer.invoke("update:skip", version);
   },
 
+  // Text captured by the macOS "Read out loud" Service, to be spoken in the
+  // UI. Payload: { text, source }.
+  onExternalSpeak: (callback: (payload: { text: string; source: string }) => void) => {
+    const handler = (_event: any, payload: { text: string; source: string }) => callback(payload);
+    ipcRenderer.on("external:speak", handler);
+    return () => ipcRenderer.removeListener("external:speak", handler);
+  },
+
   // Open an https link in the default browser.
   openExternal: (url: string) => {
     ipcRenderer.send("app:open-external", url);
@@ -136,6 +144,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       requestId: string;
       units: { id: string; text: string }[];
       voice: string;
+      fastStart?: boolean;
     }) => ipcRenderer.send("reader:generate", params),
     cancel: (requestId: string) => ipcRenderer.send("reader:cancel", requestId),
     getRecents: () => ipcRenderer.invoke("reader:recents:get"),
@@ -192,6 +201,7 @@ interface UpdateInfo {
   latest: string;
   notesUrl: string;
   downloadUrl: string;
+  highlights: string[];
 }
 
 // TypeScript declaration for the exposed API
@@ -229,6 +239,9 @@ declare global {
       getUpdate: () => Promise<UpdateInfo | null>;
       onUpdateAvailable: (callback: (update: UpdateInfo | null) => void) => () => void;
       skipVersion: (version: string) => Promise<UpdateInfo | null>;
+      onExternalSpeak: (
+        callback: (payload: { text: string; source: string }) => void
+      ) => () => void;
       openExternal: (url: string) => void;
       track: (name: string, properties?: Record<string, unknown>) => void;
       setSidebar: (open: boolean) => Promise<void>;

@@ -1,4 +1,6 @@
 import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, } from "electron";
+import { installMacService } from "./mac-service.js";
+import { execFile } from "child_process";
 import { Worker } from "worker_threads";
 import * as path from "path";
 import * as fs from "fs";
@@ -132,6 +134,7 @@ function createWindow() {
         minWidth: 400,
         minHeight: 500,
         resizable: true,
+        show: false,
         // Frameless-with-traffic-lights only makes sense on macOS. On Windows/Linux
         // we keep the native frame so users get the expected min/max/close buttons
         // and OS-native drag, instead of an invisible drag region fighting them.
@@ -142,6 +145,34 @@ function createWindow() {
             sandbox: false,
             preload: preloadPath,
         },
+    });
+    // Show only once rendered, and explicitly take focus: on macOS a freshly
+    // launched app (from a terminal, login item, etc.) is not activated
+    // automatically, so the window would appear behind whatever has focus and
+    // the text box's autofocus never fires.
+    mainWindow.once("ready-to-show", () => {
+        mainWindow?.show();
+        mainWindow?.focus();
+        if (isMac) {
+            app.focus({ steal: true });
+            // Recent macOS refuses activation requests from apps that weren't
+            // launched by direct user action (e.g. dev runs spawned from a
+            // terminal), so app.focus() can silently do nothing. If we're still not
+            // focused a moment later, force it via System Events — Dock/Finder
+            // launches are already active by then, so this (and its one-time
+            // Automation consent) only ever fires for terminal-spawned runs.
+            setTimeout(() => {
+                if (!mainWindow || mainWindow.isFocused())
+                    return;
+                execFile("osascript", [
+                    "-e",
+                    `tell application "System Events" to set frontmost of (first application process whose unix id is ${process.pid}) to true`,
+                ], (err, _stdout, stderr) => {
+                    if (err)
+                        console.warn("[focus] System Events activation failed:", stderr || err.message);
+                });
+            }, 400);
+        }
     });
     // Load React UI - from dev server in development, from built files in production
     if (isDev) {
@@ -658,6 +689,38 @@ function createExtensionServer() {
             });
             return;
         }
+        // POST /api/v1/speak - speak text aloud on THIS device (drives the macOS
+        // "Read out loud" Services entry). Body is raw text, or JSON { "text": "" }.
+        if (req.method === "POST" && url.pathname === "/api/v1/speak") {
+            let body = "";
+            req.on("data", (chunk) => (body += chunk));
+            req.on("end", () => {
+                let text = body;
+                try {
+                    const parsed = JSON.parse(body);
+                    if (parsed && typeof parsed.text === "string")
+                        text = parsed.text;
+                }
+                catch {
+                    // Not JSON — treat the raw body as the text to speak.
+                }
+                text = (text || "").trim();
+                if (!text) {
+                    res.writeHead(400, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ error: "no text" }));
+                    return;
+                }
+                track("extension_api_request", {
+                    endpoint: "speak",
+                    text_length_bucket: lengthBucket(text.length),
+                });
+                // Play on this device, even if the window is hidden in the tray.
+                mainWindow?.webContents.send("external:speak", { text, source: "service" });
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: true }));
+            });
+            return;
+        }
         // 404 for unknown routes
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Not found" }));
@@ -951,6 +1014,11 @@ ipcMain.on("app:quit", () => {
     app.quit();
 });
 // ============ App Lifecycle ============
+// Audio is started programmatically (macOS "Read out loud" Service), not
+// always from a click in our own window. Chromium's default autoplay policy
+// gates AudioContext on a user gesture in the page, which would leave
+// service-triggered playback silently suspended. Lift that gate.
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.whenReady().then(() => {
     // Init telemetry first so app_launched and early events are captured. No-op
     // when not configured / disabled; dev builds send too, tagged is_dev.
@@ -969,6 +1037,12 @@ app.whenReady().then(() => {
     createWindow();
     preloadModel();
     startUpdateChecks(() => mainWindow);
+    // macOS only: install the "Read out loud" right-click Services entry, which
+    // pipes the selection to the local /api/v1/speak endpoint. Not available in
+    // MAS builds (no localhost server there).
+    if (process.platform === "darwin" && !process.mas) {
+        installMacService();
+    }
     app.on("activate", () => {
         if (mainWindow) {
             mainWindow.show();

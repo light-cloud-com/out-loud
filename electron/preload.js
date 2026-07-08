@@ -84,6 +84,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     skipVersion: async (version) => {
         return await ipcRenderer.invoke("update:skip", version);
     },
+    // Text captured by the macOS "Read out loud" Service, to be spoken in the
+    // UI. Payload: { text, source }.
+    onExternalSpeak: (callback) => {
+        const handler = (_event, payload) => callback(payload);
+        ipcRenderer.on("external:speak", handler);
+        return () => ipcRenderer.removeListener("external:speak", handler);
+    },
     // Open an https link in the default browser.
     openExternal: (url) => {
         ipcRenderer.send("app:open-external", url);
