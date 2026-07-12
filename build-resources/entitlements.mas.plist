@@ -6,6 +6,17 @@
     <key>com.apple.security.app-sandbox</key>
     <true/>
 
+    <!-- Electron talks to its helper processes over a Mach port named
+         <TeamID>.<BundleID>.MachPortRendezvousServer. A sandboxed app may only
+         register that Mach service if the name is covered by an App Group, so
+         without this the app crashes on launch (bootstrap_check_in: Permission
+         denied) before any window appears. Must also be in the provisioning
+         profile. -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+      <string>8Y2UTZ2NBZ.io.out-loud.outloud</string>
+    </array>
+
     <!-- Outgoing connections only (telemetry, update checks). The local
          extension HTTP server (which would need network.server) is disabled in
          the Mac App Store build per guideline 2.4.5(i). -->
