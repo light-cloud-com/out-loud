@@ -1,0 +1,13 @@
+# Every path in this repository is owned by the maintainer.
+#
+# Paired with "Require review from Code Owners" on `main`, this makes approval
+# specifically @julia-kafarska's rather than any account with write access —
+# so the rule still holds if collaborators are added later.
+#
+# Outside contributions arrive as pull requests from forks (the repo is public
+# and forking is enabled); this is what gates them on a maintainer review.
+#
+# The release automation merges with `gh pr merge --admin`, which bypasses this
+# by design — see docs/build/releasing.md.
+
+* @julia-kafarska
