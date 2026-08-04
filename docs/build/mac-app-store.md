@@ -34,6 +34,37 @@ flowchart LR
   ASC --> MAS[Mac App Store]
 ```
 
+## Versioning (CFBundleVersion)
+
+App Store Connect rejects an upload whose `CFBundleVersion` is not **higher** than the last one it accepted, with a 409:
+
+> This bundle is invalid. The value for key CFBundleVersion […] must contain a higher version than that of the previously uploaded version
+
+Two separate keys are involved:
+
+| Key | Comes from | Meaning |
+| --- | ---------- | ------- |
+| `CFBundleShortVersionString` | `package.json` `version` | Marketing version — what users see |
+| `CFBundleVersion` | electron-builder `buildVersion` | Build number — must strictly increase per upload |
+
+**`buildVersion` is deliberately not set** in [`electron-builder.json`](../../electron-builder.json). Left unset, electron-builder defaults it to the `package.json` version, so the build number tracks the release version automatically and cannot drift.
+
+It used to be hardcoded and hand-bumped, and it drifted twice — first 2.0.1 against a 2.0.2 package.json, then 2.1.1 against 2.1.2, which produced exactly the 409 above even though the release had been bumped. `npm version` only edits `package.json`, so any hardcoded value goes stale the moment you cut a release. Don't reintroduce it.
+
+The one legitimate use is **re-uploading under a version App Store Connect has already seen** — a rejected binary, say. Marketing versions don't have to be burned for that: temporarily set a four-component build number and remove it once accepted.
+
+```jsonc
+// electron-builder.json — temporary, for a re-upload of an already-uploaded 2.1.2
+"buildVersion": "2.1.2.1"
+```
+
+Verify before uploading:
+
+```bash
+/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" \
+  "releases/macos/mas-universal/Out Loud.app/Contents/Info.plist"
+```
+
 ## Commands
 
 ```bash
