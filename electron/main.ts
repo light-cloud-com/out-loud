@@ -8,8 +8,16 @@ import {
   shell,
   dialog,
   screen,
+  crashReporter,
 } from "electron";
 import { installMacService } from "./mac-service.js";
+import {
+  initCrashLog,
+  teeConsole,
+  installProcessHandlers,
+  logLine,
+  getCrashLogPath,
+} from "./crash-log.js";
 import { execFile } from "child_process";
 import { Worker } from "worker_threads";
 import * as path from "path";
@@ -32,6 +40,32 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ---- Crash diagnostics: set up before ANY other startup work ----------------
+// A native abort during startup (see crash-log.ts) leaves nothing behind unless
+// the log already exists and crashpad is already connected, so both are armed
+// here at module load rather than in whenReady().
+
+// Minidumps for crashes JS can never catch. uploadToServer:false keeps them
+// local — dumps land in app.getPath("crashDumps"); nothing is sent anywhere.
+try {
+  crashReporter.start({ uploadToServer: false });
+} catch {
+  // Never let diagnostics setup prevent the app from starting.
+}
+
+const CRASH_LOG_PATH = path.join(app.getPath("logs"), "out-loud.log");
+initCrashLog(CRASH_LOG_PATH, {
+  version: app.getVersion(),
+  electron: process.versions.electron,
+  platform: process.platform,
+  arch: process.arch,
+  packaged: app.isPackaged,
+});
+teeConsole("main");
+installProcessHandlers("main");
+console.log("[Main] Log file:", CRASH_LOG_PATH);
+console.log("[Main] Crash dumps:", app.getPath("crashDumps"));
 
 // Load app icon from PNG file
 const iconPath = path.join(__dirname, "icon.png");
@@ -354,7 +388,11 @@ function createTTSWorker() {
   const workerPath = path.join(__dirname, "tts-worker.js");
   console.log("[Worker] Starting from:", workerPath);
 
-  ttsWorker = new Worker(workerPath);
+  // The worker writes to the crash log itself rather than relying on its stdout
+  // being piped here: a native abort inside onnxruntime kills the thread with
+  // whatever is still sitting in the pipe, and the lost line is precisely the
+  // one identifying where it died.
+  ttsWorker = new Worker(workerPath, { workerData: { crashLogPath: getCrashLogPath() } });
 
   ttsWorker.on("message", (message) => {
     const { requestId, type, data, error } = message;
@@ -435,7 +473,7 @@ function createTTSWorker() {
   });
 
   ttsWorker.on("error", (error) => {
-    console.error("[Worker] ERROR:", error);
+    console.error("[Worker] ERROR:", error?.stack || error);
   });
 
   ttsWorker.on("exit", (code) => {
@@ -1164,6 +1202,21 @@ ipcMain.on("app:quit", () => {
 // gates AudioContext on a user gesture in the page, which would leave
 // service-triggered playback silently suspended. Lift that gate.
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+
+// Chromium-side deaths. A GPU or utility process dying can take the window with
+// it; without these the app closes and leaves nothing behind to explain why.
+app.on("child-process-gone", (_event, details) => {
+  logLine(
+    "main:fatal",
+    `child-process-gone type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`
+  );
+});
+app.on("render-process-gone", (_event, _webContents, details) => {
+  logLine(
+    "main:fatal",
+    `render-process-gone reason=${details.reason} exitCode=${details.exitCode}`
+  );
+});
 
 app.whenReady().then(() => {
   // Init telemetry first so app_launched and early events are captured. No-op

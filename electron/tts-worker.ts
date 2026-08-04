@@ -1,4 +1,4 @@
-import { parentPort } from "worker_threads";
+import { parentPort, workerData } from "worker_threads";
 import * as ort from "onnxruntime-node";
 import * as fs from "fs/promises";
 import { existsSync } from "fs";
@@ -11,9 +11,20 @@ import ESpeakNg from "espeak-ng";
 
 import { createWavBuffer } from "./shared-audio.js";
 import { splitLeadingPhonemes } from "./phoneme-split.js";
+import { attachCrashLog, teeConsole, installProcessHandlers } from "./crash-log.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Mirror this worker's breadcrumbs into the main process's crash log. Every
+// startup crash we've seen died in here (onnxruntime session creation), so
+// these lines are the ones that identify the failure. Absent when the worker is
+// driven standalone rather than by Electron — logging is then simply skipped.
+if (workerData?.crashLogPath) {
+  attachCrashLog(workerData.crashLogPath);
+  teeConsole("worker");
+  installProcessHandlers("worker");
+}
 
 // Resolve a path that may live inside app.asar to its real on-disk location
 // under app.asar.unpacked. Always prefer the unpacked variant when it exists,
@@ -118,6 +129,14 @@ async function createSessionWithFallback(
   modelBuffer: ArrayBuffer | Uint8Array,
   providers: string[]
 ): Promise<{ session: ort.InferenceSession; effective: string[] }> {
+  // Logged BEFORE the call, not after: this is the one native frame that can
+  // abort the whole process, so if the log ends here we know exactly what was
+  // being attempted and with which options.
+  console.log(
+    `[TTS Worker] Creating ONNX session: providers=[${providers.join(
+      ", "
+    )}] graphOptimizationLevel=${GRAPH_OPTIMIZATION_LEVEL} arch=${process.arch}`
+  );
   try {
     const session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
       executionProviders: providers as ort.InferenceSession.ExecutionProviderConfig[],
@@ -131,6 +150,9 @@ async function createSessionWithFallback(
       `[TTS Worker] EP [${providers.join(", ")}] failed (${
         err instanceof Error ? err.message : String(err)
       }); falling back to CPU`
+    );
+    console.log(
+      `[TTS Worker] Creating ONNX session: providers=[cpu] graphOptimizationLevel=${GRAPH_OPTIMIZATION_LEVEL}`
     );
     const session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
       executionProviders: ["cpu"] as ort.InferenceSession.ExecutionProviderConfig[],
