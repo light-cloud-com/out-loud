@@ -98,6 +98,17 @@ function providersFor(acceleration: Acceleration): string[] {
   return [...gpu, "cpu"]; // "auto": every bundled GPU EP, then CPU
 }
 
+// onnxruntime-node 1.23.2 segfaults inside NchwcTransformer — an x86-only,
+// Level-3 (layout) graph transformer — while optimising model_q8f16.onnx. It's
+// a native abort during InferenceSession.create, so the try/catch below never
+// runs and the process dies before anything is logged: the app just vanishes a
+// few seconds after launch on every x64 machine (#36 Windows, #37 Linux, #38
+// Intel Mac). Capping optimisation below Level 3 skips that pass entirely.
+// arm64 never runs NCHWc, so it keeps ORT's default.
+const GRAPH_OPTIMIZATION_LEVEL: NonNullable<
+  ort.InferenceSession.SessionOptions["graphOptimizationLevel"]
+> = process.arch === "x64" ? "basic" : "all";
+
 // Create a session, hard-falling-back to CPU-only if the GPU EP can't
 // initialise (missing framework, model it can't compile, etc.). The EP list
 // already lets ORT partition unsupported ops to CPU; this catch handles the
@@ -110,6 +121,7 @@ async function createSessionWithFallback(
   try {
     const session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
       executionProviders: providers as ort.InferenceSession.ExecutionProviderConfig[],
+      graphOptimizationLevel: GRAPH_OPTIMIZATION_LEVEL,
     });
     console.log(`[TTS Worker] ONNX session providers: ${providers.join(", ")}`);
     return { session, effective: providers };
@@ -122,6 +134,7 @@ async function createSessionWithFallback(
     );
     const session = await ort.InferenceSession.create(Buffer.from(modelBuffer), {
       executionProviders: ["cpu"] as ort.InferenceSession.ExecutionProviderConfig[],
+      graphOptimizationLevel: GRAPH_OPTIMIZATION_LEVEL,
     });
     return { session, effective: ["cpu"] };
   }
