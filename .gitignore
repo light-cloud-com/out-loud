@@ -16,6 +16,11 @@ chrome-extension/lib/*.wasm
 # load on fresh Windows installs without the user installing VC++ Redist.
 build-resources/vc_redist.x64.exe
 
+# Staged on demand by scripts/bundle-vc-runtime.mjs before the Microsoft Store
+# (MSIX) build — the CRT DLLs ship app-local inside the package. Keep the dir
+# (.gitkeep) but not its DLLs.
+build-resources/win-runtime/*.dll
+
 # OS
 .DS_Store
 Thumbs.db

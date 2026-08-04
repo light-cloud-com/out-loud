@@ -68,7 +68,24 @@
         "arch": ["x64"]
       }
     ],
-    "icon": "build-resources/icon.ico"
+    "icon": "build-resources/icon.ico",
+    "extraFiles": [
+      {
+        "from": "build-resources/win-runtime",
+        "to": ".",
+        "filter": ["*.dll"]
+      }
+    ]
+  },
+  "appx": {
+    "applicationId": "OutLoud",
+    "displayName": "Out Loud",
+    "backgroundColor": "#000000",
+    "languages": ["en-US"],
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "identityName": "REPLACE_WITH_PARTNER_CENTER_IDENTITY_NAME",
+    "publisher": "CN=REPLACE_WITH_PARTNER_CENTER_PUBLISHER_ID",
+    "publisherDisplayName": "REPLACE_WITH_PARTNER_CENTER_PUBLISHER_DISPLAY_NAME"
   },
   "nsis": {
     "oneClick": false,

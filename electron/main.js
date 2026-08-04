@@ -1025,11 +1025,16 @@ app.whenReady().then(() => {
     initTelemetry(isDev);
     trackSessionStart();
     createTTSWorker();
-    // The browser-extension bridge listens for incoming localhost connections,
-    // which requires the com.apple.security.network.server sandbox entitlement.
-    // The Mac App Store rejects that entitlement (guideline 2.4.5(i)), so the
-    // extension API is only available in the Developer ID / direct-download build.
-    if (!process.mas) {
+    // The browser-extension bridge listens for incoming localhost connections.
+    // On macOS that needs the com.apple.security.network.server sandbox
+    // entitlement, which the Mac App Store rejects (guideline 2.4.5(i)). We keep
+    // the extension API out of the Microsoft Store (MSIX) build too, mirroring
+    // that decision so the store package stays certification-safe. So the API is
+    // only available in the direct-download (Developer ID / NSIS) builds.
+    // process.mas is set only in MAS builds; process.windowsStore only when
+    // running from an MSIX/AppX package.
+    const storeBuild = process.mas || process.windowsStore;
+    if (!storeBuild) {
         createExtensionServer();
     }
     createAppMenu();

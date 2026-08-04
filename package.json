@@ -55,6 +55,7 @@
     "electron:build:mas": "node scripts/build-universal-ffmpeg.mjs && npm run electron-ui:build && npm run electron:compile && electron-builder --mac mas --universal --publish never -c.directories.output=releases/macos && npm run verify:mas",
     "electron:build:mas-dev": "npm run electron-ui:build && npm run electron:compile && electron-builder --mac mas-dev --publish never -c.directories.output=releases/macos",
     "electron:build:win": "node scripts/download-vc-redist.mjs && npm run electron-ui:build && npm run electron:compile && electron-builder --win --publish never -c.directories.output=releases/windows",
+    "electron:build:appx": "node scripts/bundle-vc-runtime.mjs && node scripts/create-appx-assets.mjs && npm run electron-ui:build && npm run electron:compile && electron-builder --win appx --x64 --publish never -c.directories.output=releases/windows",
     "electron:build:linux": "npm run electron-ui:build && npm run electron:compile && electron-builder --linux --publish never -c.directories.output=releases/linux",
     "extension:chrome:pack": "mkdir -p releases/extensions && cd chrome-extension && zip -r ../releases/extensions/out-loud-chrome.zip . -x '*.DS_Store'",
     "extension:safari:convert": "mkdir -p releases/extensions && xcrun safari-web-extension-converter chrome-extension --project-location releases/extensions/safari --app-name 'Out Loud Extension' --bundle-identifier com.lightcloudlabs.outloud.extension --no-prompt",

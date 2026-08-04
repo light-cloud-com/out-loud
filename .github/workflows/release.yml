@@ -20,12 +20,22 @@ jobs:
       matrix:
         include:
           - os: macos-latest
+            artifact: macos
             script: electron:build:mac
             output_dir: releases/macos
           - os: windows-latest
+            artifact: windows
             script: electron:build:win
             output_dir: releases/windows
+          # Microsoft Store package (MSIX/AppX). Built unsigned — the Store
+          # signs it on submission. Publisher identity comes from Partner
+          # Center; see docs/build/microsoft-store.md.
+          - os: windows-latest
+            artifact: windows-store
+            script: electron:build:appx
+            output_dir: releases/windows
           - os: ubuntu-latest
+            artifact: linux
             script: electron:build:linux
             output_dir: releases/linux
     runs-on: ${{ matrix.os }}
@@ -71,11 +81,13 @@ jobs:
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-${{ matrix.os }}
+          name: desktop-${{ matrix.artifact }}
           path: |
             ${{ matrix.output_dir }}/*.dmg
             ${{ matrix.output_dir }}/*.zip
             ${{ matrix.output_dir }}/*.exe
+            ${{ matrix.output_dir }}/*.appx
+            ${{ matrix.output_dir }}/*.msix
             ${{ matrix.output_dir }}/*.AppImage
             ${{ matrix.output_dir }}/*.deb
             ${{ matrix.output_dir }}/*.blockmap

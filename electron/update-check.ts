@@ -195,8 +195,10 @@ async function refresh() {
 export function startUpdateChecks(getWindow: () => BrowserWindow | null) {
   windowGetter = getWindow;
   // App Store builds must not advertise their own updates — the store owns
-  // distribution there (process.mas is set only in MAS builds).
-  if ((process as { mas?: boolean }).mas) return;
+  // distribution there. process.mas is set only in Mac App Store builds;
+  // process.windowsStore only when running from an MSIX/AppX package.
+  const p = process as { mas?: boolean; windowsStore?: boolean };
+  if (p.mas || p.windowsStore) return;
   // Delay the first check so it never competes with startup / model preload.
   setTimeout(() => void refresh(), 5000);
   pollTimer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
