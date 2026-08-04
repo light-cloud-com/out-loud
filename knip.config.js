@@ -23,6 +23,7 @@ export default {
         // .ts sources as unused — list them as entries like the other modules.
         "electron/update-check.ts",
         "electron/mac-service.ts",
+        "electron/crash-log.ts",
         "electron/store.ts",
         "electron/reader-recents.ts",
         "electron/telemetry.ts",
